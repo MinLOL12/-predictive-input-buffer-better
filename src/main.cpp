@@ -6,7 +6,9 @@
 // and delivered that many physics ticks later. 1 tick = 1/240 s = 0.25 frames @ 60fps.
 //
 // v2 changes:
-//  - Bigger windows: F6 stages up to 32 ticks (8 frames) plus a CUSTOM stage (settings).
+//  - Bigger windows: F6 stages up to 128 ticks (32 frames), a CUSTOM stage (settings, any
+//    number of ticks) and an UNLIMITED stage. v2.78: one max delay for every gamemode
+//    (cube, wave, ship, ball, UFO, robot, spider, swing) - no per-mode caps anymore.
 //  - Smart prediction: ghost uses orbs, pads, gravity portals and speed portals; mode /
 //    size / dual / mirror / teleport portals end the prediction as "safe".
 //  - Input queue: every input arriving during a delay is shifted by the same amount,
@@ -54,6 +56,10 @@ namespace {
     constexpr size_t PANEL_LINES = 8;
     constexpr int SPIDER_LAND = 12;  // v2.15: ticks on a surface after a spider input = safe
     constexpr int SPAM_STREAK = 3;  // this many fast inputs in a row = wave spam
+    // v2.78: internal safety ceiling for "unlimited" (= 100 seconds / 6000 frames at 60fps).
+    // Never the binding limit in practice: searches end on their own via the time budget,
+    // the same-crash rule, or the ghost dying while coasting before a delayed input fires.
+    constexpr int MAX_TICKS = 24000;
 
     constexpr uint64_t typeBit(GameObjectType type) {
         return 1ull << static_cast<int>(type);
@@ -106,19 +112,25 @@ namespace {
     struct Stage {
         bool enabled;
         int ticksAll;
-        int ticksWave;
+        int ticksWave;  // v2.78: always == ticksAll (one max delay for every gamemode)
         bool custom;
+        bool unlimited;
     };
 
+    // v2.78: F6 stages - 0.5f, 1f, 2f, 4f, 6f, 8f, 16f, 32f, CUSTOM (any number of ticks
+    // from the settings), UNLIMITED (no cap at all), OFF. Same delay in every gamemode.
     constexpr Stage STAGES[] = {
-        { true, 2, 2, false },
-        { true, 4, 4, false },
-        { true, 8, 8, false },
-        { true, 16, 8, false },
-        { true, 24, 12, false },
-        { true, 32, 16, false },
-        { true, 0, 0, true },
-        { false, 0, 0, false },
+        { true, 2, 2, false, false },
+        { true, 4, 4, false, false },
+        { true, 8, 8, false, false },
+        { true, 16, 16, false, false },
+        { true, 24, 24, false, false },
+        { true, 32, 32, false, false },
+        { true, 64, 64, false, false },
+        { true, 128, 128, false, false },
+        { true, 0, 0, true, false },
+        { true, MAX_TICKS, MAX_TICKS, false, true },
+        { false, 0, 0, false, false },
     };
     constexpr int STAGE_COUNT = sizeof(STAGES) / sizeof(STAGES[0]);
 
@@ -226,7 +238,6 @@ namespace {
         bool predictMovers = false;  // v2.27: move objects along their current motion during predictions
         bool shipBuffer = false;     // v2.25: buffer ship inputs too
         int shipSpamGap = 6;         // v2.44: ship feathering is normal control, only taps closer than this are spam
-        int shipMaxDelay = 2;        // v2.25: ship's own max delay (240/s ticks)
         bool perfLog = false;        // v2.21: log time / runs / ghost ticks per click
         int simRuns = 0;             // v2.21: predictions run for the current click
         long simTicks = 0;           // v2.21: ghost ticks stepped for the current click
@@ -483,7 +494,6 @@ namespace {
             buf.waveMargin = false;
         }
         buf.predictMovers = mod->getSettingValue<bool>("predict-moving-objects");
-        buf.shipMaxDelay = static_cast<int>(mod->getSettingValue<int64_t>("ship-max-delay"));
         buf.shipSpamGap = static_cast<int>(mod->getSettingValue<int64_t>("ship-spam-gap"));
         buf.cbfSync = mod->getSettingValue<bool>("cbf-sync");
         buf.robotAutoRelease = mod->getSettingValue<bool>("robot-auto-release");
@@ -530,8 +540,10 @@ namespace {
         auto const& s = STAGES[buf.stage];
         buf.enabled = s.enabled;
         if (s.custom) {
-            buf.ticksAll = static_cast<int>(Mod::get()->getSettingValue<int64_t>("custom-ticks"));
-            buf.ticksWave = static_cast<int>(Mod::get()->getSettingValue<int64_t>("custom-wave-ticks"));
+            // v2.78: one custom value for every gamemode (wave and ship included), no cap
+            // besides the MAX_TICKS safety ceiling so a typed-in huge number can't overflow.
+            int64_t custom = Mod::get()->getSettingValue<int64_t>("custom-ticks");
+            buf.ticksAll = buf.ticksWave = static_cast<int>(std::clamp<int64_t>(custom, 0, MAX_TICKS));
         }
         else {
             buf.ticksAll = s.ticksAll;
@@ -583,8 +595,8 @@ namespace {
             buf.smart, buf.fullState, buf.robustSaves, buf.lateCrash, buf.practiceOnly);
         text += fmt::format("orbs: align {} (ground {}, {}t) timing {} assume {} both {} | memory {} ({} spots)\n", buf.orbAlign,
             buf.orbAlignGround, buf.orbWindow, buf.orbTiming, buf.assumeOrbs, buf.tryBothOrbs, buf.learn, memorySpots());
-        text += fmt::format("wave: v4.6 {} margin {} horizon {} spam gap {} | robot smart {} | spider smart {} | ship {} (max {}t)\n",
-            buf.waveV46, buf.waveMargin, buf.waveHorizon, buf.spamGap, buf.robotSmart, buf.spiderSmart, buf.shipBuffer, buf.shipMaxDelay);
+        text += fmt::format("wave: v4.6 {} margin {} horizon {} spam gap {} | robot smart {} | spider smart {} | ship {} (same max delay as every mode)\n",
+            buf.waveV46, buf.waveMargin, buf.waveHorizon, buf.spamGap, buf.robotSmart, buf.spiderSmart, buf.shipBuffer);
         text += fmt::format("auto-release: wave {} robot {} dash {} normal runs {} window {} | movers: avoid {} predict {}\n",
             buf.autoRelease, buf.robotAutoRelease, buf.dashAutoRelease, buf.autoNormalRuns, buf.autoWindow, buf.avoidMovers,
             buf.predictMovers);
@@ -614,8 +626,11 @@ namespace {
         if (!buf.enabled) {
             return "Buffer: OFF";
         }
-        return fmt::format("Buffer{}: {:g}f / wave {:g}f{}", STAGES[buf.stage].custom ? " (custom)" : "", buf.ticksAll * TICK,
-            buf.ticksWave * TICK, buf.train ? " [training]" : "");
+        if (STAGES[buf.stage].unlimited) {
+            return fmt::format("Buffer: unlimited (all modes){}", buf.train ? " [training]" : "");
+        }
+        return fmt::format("Buffer{}: {:g}f (all modes){}", STAGES[buf.stage].custom ? " (custom)" : "", buf.ticksAll * TICK,
+            buf.train ? " [training]" : "");
     }
 
     void dropGhosts() {
@@ -1750,7 +1765,7 @@ namespace {
     // (or jump off the ground instead). Find the delay that lands the press inside the
     // orb, like the cube buffer does for jumps. Returns that delay, or 0.
     int alignOrb(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int horizon, int releaseAfter, int learned, int* landed) {
-        int window = st(std::clamp(buf.orbWindow, 1, 64));
+        int window = st(std::clamp(buf.orbWindow, 1, MAX_TICKS));
         int found = 0;
         SimEnd end;
         buf.orbClick = false;  // the press being tested is the orb click
@@ -2845,7 +2860,9 @@ namespace {
         if (anyWave) {
             horizon = fullWaveHorizon(mini);
         }
-        int maxDelay = st(anyWave ? buf.ticksWave : (anyShip ? std::clamp(buf.shipMaxDelay, 0, 16) : buf.ticksAll));
+        // v2.78: the stage's max delay, the same for every gamemode - wave and ship no
+        // longer have their own smaller caps (ship used to be clamped to 16 ticks here).
+        int maxDelay = st(buf.ticksAll);
         if (buf.lowLatency) {
             maxDelay = std::min(maxDelay, st(4));  // at most 1 frame (60 fps) of delay
         }
@@ -2873,7 +2890,7 @@ namespace {
             SimEnd probeEnd;
             buf.skipPress = true;
             buf.orbClick = false;
-            int window = st(std::clamp(buf.orbWindow, 1, 64));
+            int window = st(std::clamp(buf.orbWindow, 1, MAX_TICKS));
             simulate(layer, p1, p2, dual, 0, true, window + 2, -1, window + 2, &probeEnd);
             buf.skipPress = false;
             buf.orbClick = buf.assumeOrbs;
@@ -3676,6 +3693,12 @@ $on_mod(Loaded) {
     buf.console = Mod::get()->getSettingValue<bool>("debug-console");
     buf.showPath = Mod::get()->getSettingValue<bool>("show-path");
     recoverGlobals();
+    // v2.78: the 16f / 32f / UNLIMITED stages moved CUSTOM (6 -> 8) and OFF (7 -> 10)
+    if (!Mod::get()->getSavedValue<bool>("stage-v278", false)) {
+        int64_t oldStage = Mod::get()->getSavedValue<int64_t>("stage", 0);
+        Mod::get()->setSavedValue("stage", oldStage == 6 ? 8 : oldStage == 7 ? 10 : oldStage);
+        Mod::get()->setSavedValue("stage-v278", true);
+    }
     buf.stage = std::clamp(static_cast<int>(Mod::get()->getSavedValue<int64_t>("stage", 0)), 0, STAGE_COUNT - 1);
     // v2.62: per-level settings off (switched off once): every level uses the same switches, like v2.43.1
     if (!Mod::get()->getSavedValue<bool>("per-level-v262", false)) {
