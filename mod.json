@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.78.0",
+	"version": "v2.79.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -12,7 +12,7 @@
 		"custom-ticks": {
 			"type": "int",
 			"name": "Custom stage: max delay (ticks)",
-			"description": "Max delay for the CUSTOM F6 stage, for EVERY gamemode: cube, wave, ship, ball, UFO, robot, spider and swing all use this same value. No frame cap: type any number (4 ticks = 1 frame at 60fps, 240 ticks = 1 second). For no limit at all, use the UNLIMITED F6 stage instead. Very big delays need a bigger 'Prediction time budget' (and 'Auto time budget' off) or the search runs out of time before reaching them.",
+			"description": "Max delay for the CUSTOM F6 stage, for EVERY gamemode: cube, wave, ship, ball, UFO, robot, spider and swing all use this same value. This is how EARLY you may click: an early click is held back tick by tick until the first timing whose path survives, so 10 frames early = delayed (up to) 10 frames. No frame cap: type any number (4 ticks = 1 frame at 60fps, 240 ticks = 1 second). For no limit at all, use the UNLIMITED F6 stage instead. Very big delays also need a bigger 'Prediction time budget' or the search runs out of time before reaching them.",
 			"default": 40,
 			"min": 0,
 			"max": 24000
@@ -20,7 +20,7 @@
 		"sim-budget-ms": {
 			"type": "float",
 			"name": "Prediction time budget (ms)",
-			"description": "Max time spent predicting per click. Higher = finds longer saves on big windows, but may hitch on dense levels. The UNLIMITED stage / very big custom delays need a big budget here (and 'Auto time budget' off, since that caps clicks at about one frame).",
+			"description": "Max time spent predicting per click. Higher = finds longer saves on big windows, but may hitch on dense levels. The UNLIMITED stage / very big custom delays need a big budget here to scan all the way out to far-away saves.",
 			"default": 8.0,
 			"min": 1.0,
 			"max": 500.0
@@ -206,7 +206,7 @@
 		"cube-late-crash": {
 			"type": "int",
 			"name": "Cube: ignore crashes after (ticks)",
-			"description": "If pressing now only crashes after a normal cube / ball jump would have landed, the crash is the next obstacle's, not this click's: no delay can help, so the mod skips the search (saves time and stutter). 90 ticks = about 0.37 s. 0 = always search.",
+			"description": "If pressing now only crashes long after the jump landed, the crash may be the next obstacle's, not this click's. The search is skipped only when the time between landing and crashing is at least your whole buffer (F6 stage) - then no delay you allow could still be in the air at the crash. With a big / unlimited buffer, very early clicks (jump lands, then runs into the spike you meant to jump) are searched and saved. 90 ticks = about 0.37 s. 0 = always search.",
 			"default": 90,
 			"min": 0,
 			"max": 240
@@ -318,7 +318,7 @@
 		"auto-budget": {
 			"type": "bool",
 			"name": "Auto time budget",
-			"description": "While the game is already dropping frames (a frame took over twice as long as it should, and over 20 ms), clicks get at most 4 ms of prediction time so it doesn't get worse. Otherwise the time budget setting is used as it is.",
+			"description": "Caps each click's prediction time at about one frame at your FPS, and at 4 ms while the game is already dropping frames, so predictions don't make hitches worse. Stages over 16f (64 ticks) are exempt: scanning out to saves that far away takes more than a frame, so those stages use the time budget setting as it is.",
 			"default": true
 		},
 		"menu-theme": {
