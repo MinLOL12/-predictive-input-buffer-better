@@ -227,6 +227,7 @@ namespace {
         bool deathLog = false;       // v2.32: log what kills the press-now ghost on every no-save
         bool captureKiller = false;  // v2.30: record what kills the ghost in the press-now run
         bool baseTouchedDown = false;  // v2.63: the press-now ghost was back on the ground at some point
+        int baseTouchTick = -1;        // v2.79: tick (after the input) when it first landed again
         bool killerSeen = false;
         int killerTick = -1;
         int killerId = 0, killerType = -1;
@@ -520,7 +521,11 @@ namespace {
     // jump: only +1..+5 delays were ever tried, so most clicks got no save).
     void clickBudget() {
         double budget = buf.userBudget;
-        if (buf.autoBudget) {
+        // v2.79: stages over 16f (64 ticks) have to scan more delays than fit in ~1 frame
+        // of prediction time, or early clicks beyond that are never reached. Whoever picks
+        // such a stage opts out of the auto frame caps; the budget setting still bounds it
+        // (and performance / low-latency modes still lower that budget in readSettings()).
+        if (buf.autoBudget && buf.ticksAll <= 64) {
             auto* director = CCDirector::get();
             double interval = director->getAnimationInterval() * 1000.0;
             double frame = director->getDeltaTime() * 1000.0;
@@ -1574,6 +1579,9 @@ namespace {
             bool grounded = buf.ghost1->m_isOnGround && (!second || buf.ghost2->m_isOnGround);
             if (grounded && airTicks > 0 && buf.captureKiller) {
                 buf.baseTouchedDown = true;
+                if (buf.baseTouchTick < 0) {
+                    buf.baseTouchTick = survived;
+                }
             }
             if (!grounded) {
                 ++airTicks;
@@ -1969,11 +1977,18 @@ namespace {
 
     // Same rules as the cube: the smallest delay that is safe (or clearly better) wins.
     // v2.72: the crash happens at the same moment however late the input comes (delay k
-    // dies k ticks sooner, for the first SAME_CRASH_TRIES delays): it's the next obstacle's,
-    // not this input's, so the rest of the search can't help. Robot and UFO searches spent
-    // their whole time budget on exactly that, on almost every input.
+    // dies k ticks sooner): that used to abort the search after 4 such delays, as "the next
+    // obstacle's crash, not this input's". v2.79: that abort is gone - it's also exactly what
+    // a click that's simply very early looks like. A cube that clicked 10 frames early jumps,
+    // lands, and runs into the spike at the same absolute tick for dozens of delays in a row,
+    // right up until the delay is big enough that the jump is still in the air over the spike.
+    // Aborting after 4 meant big buffers could never save big early clicks. The searches now
+    // keep scanning every tick up to the stage's max delay and pick the first delay whose
+    // path is safe (how much you were early = how much you're delayed); the time budget and
+    // "coasting already died before the delayed input fires" (StopSearch) bound the scan.
+    // sameCrash() is kept only for the "no save" log line.
     constexpr int SAME_CRASH_TRIES = 4;
-    bool crashFixed = false;  // the last search stopped for that reason
+    bool crashFixed = false;  // the crash stayed at the same moment for every delay tried
 
     bool sameCrash(int k, int ret, int base, int& streak) {
         if (streak >= 0 && std::abs(k + ret - base) <= 1) {
@@ -1981,6 +1996,7 @@ namespace {
         }
         else {
             streak = -1;
+            crashFixed = false;
         }
         if (streak >= SAME_CRASH_TRIES) {
             crashFixed = true;
@@ -2014,9 +2030,7 @@ namespace {
                 *landed = ret;
                 return k;
             }
-            if (sameCrash(k, ret, base, streak)) {
-                return 0;
-            }
+            sameCrash(k, ret, base, streak);  // v2.79: log diagnostic only, keep searching
             if (std::chrono::duration<double, std::milli>(clock::now() - start).count() > budget) {
                 if (!quiet) {
                     say("prediction budget hit at +{} ticks", k);
@@ -2199,8 +2213,8 @@ namespace {
                     }
                 }
             }
-            else if (ret < target && sameCrash(k, ret, base, sameStreak)) {
-                break;
+            else if (ret < target) {
+                sameCrash(k, ret, base, sameStreak);  // v2.79: log diagnostic only, keep searching
             }
             else if (ret >= target) {
                 // v2.63: a delay that only lives 12 ticks longer can still crash later in the same
@@ -2932,6 +2946,7 @@ namespace {
         bool shipInput = anyShip && !anyWave;  // v2.25: press or release, both steer the ship
         buf.captureKiller = true;
         buf.baseTouchedDown = false;
+        buf.baseTouchTick = -1;
         buf.killerSeen = false;
         buf.baseEscape = -1;
         int base = cubeStyleWave ? waveScore(layer, p1, p2, dual, 0, down, horizon, horizon, &end)
@@ -3037,9 +3052,18 @@ namespace {
         bool groundPress = down && !anyFlyer && !anyRobot && !anySpider && !anyWave;
         // v2.63: only once the jump came back down. A long jump (Acheron's first: ~94 ticks in
         // the air, then onto a spike) crashes late too, and that crash *is* this click's.
-        if (groundPress && buf.lateCrash > 0 && base >= st(buf.lateCrash) && buf.baseTouchedDown) {
+        // v2.79: and only when no delay in range could help anyway. A saving delay has to be
+        // bigger than the time the press-now jump spent rolling on the ground after landing
+        // before it crashed (otherwise the delayed jump has also landed by the crash moment
+        // and dies the same way). So if that gap fits inside the buffer - a big custom /
+        // unlimited stage, or a click that landed just before the spike - the click plausibly
+        // WAS an early click for that obstacle, and the search runs: how early you were is
+        // how much delay it needs. With small stages the old skip still applies (perf).
+        int rollGap = buf.baseTouchTick >= 0 ? base - buf.baseTouchTick : base;
+        if (groundPress && buf.lateCrash > 0 && base >= st(buf.lateCrash) && buf.baseTouchedDown && rollGap >= maxDelay) {
             if (buf.explain) {
-                say("pass press: crash only at {}t, after the jump would land (late crash rule)", base);
+                say("pass press: crash at {}t is {}t after the jump lands, beyond the {}t buffer (late crash rule)", base, rollGap,
+                    maxDelay);
             }
             decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
             buf.appliedInput = down;
