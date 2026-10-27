@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.80.0",
+	"version": "v2.81.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -58,6 +58,14 @@
 			"default": 65,
 			"min": 20,
 			"max": 160
+		},
+		"flyer-horizon": {
+			"type": "int",
+			"name": "Ship / UFO / swing lookahead (ticks)",
+			"description": "How far ahead ship, UFO and swing predictions look. These modes used to be fixed at 48 ticks (12 frames) - shorter than one ship arc, UFO flap or swing flip - so the crash an early input caused usually landed past the look-ahead and the input passed through unsaved. 80 ticks = 20 frames at 60fps. Higher catches later crashes but costs more time per click.",
+			"default": 80,
+			"min": 48,
+			"max": 240
 		},
 		"orb-assume-hit": {
 			"type": "bool",
@@ -152,7 +160,7 @@
 		"robot-smart": {
 			"type": "bool",
 			"name": "Robot: smart jumps",
-			"description": "A robot press only counts as a crash if no hold length saves it (your usual hold, then short to long holds). Saves are found for presses that need a different jump height, and presses you can still control aren't delayed.",
+			"description": "A robot press only counts as a crash if no hold length YOU CAN ACTUALLY REACH saves it: your usual hold, or a longer one (your release can be buffered longer, up to your F6 stage). Much shorter holds only count with robot auto-release on, since nothing else can make you let go earlier. Before, any theoretical hold length made a press 'safe', so presses that needed a short hop you weren't doing were never delayed.",
 			"default": true
 		},
 		"robot-auto-release": {
@@ -176,7 +184,7 @@
 		"spider-smart": {
 			"type": "bool",
 			"name": "Spider: smart flips",
-			"description": "A spider flip counts as done once you stand on the new surface for 12 ticks, and a crash you could have avoided by flipping back counts as safe. Stops the spider from delaying flips because of obstacles that need your next click.",
+			"description": "A spider flip counts as done once you stand on the new surface for 20 ticks (5 frames), and a crash you could have avoided by flipping back counts as safe only if flipping back clears by 6 frames. Saves must fully clear, not just live a little longer. Stops the spider from delaying flips because of obstacles that need your next click.",
 			"default": true
 		},
 		"dash-auto-release": {
@@ -276,7 +284,7 @@
 		"ball-smart": {
 			"type": "bool",
 			"name": "Ball: smart flips",
-			"description": "Ball flips that land after only a few ticks (tight corridors) count as landings, a flip is only called safe after rolling 8 ticks on the new surface (spikes right after the landing spot), and fast flipping goes straight through (spam guard).",
+			"description": "Ball flips that land after only a few ticks (tight corridors) count as landings, a flip is only called safe after rolling 16 ticks (4 frames) on the new surface, a crash you could have avoided by flipping back (clearing by 6 frames) counts as safe, saves must fully clear like cube jumps, and fast flipping goes straight through (spam guard).",
 			"default": true
 		},
 		"swing-smart": {
