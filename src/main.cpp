@@ -240,6 +240,10 @@ namespace {
         bool predictMovers = false;  // v2.27: move objects along their current motion during predictions
         bool shipBuffer = false;     // v2.25: buffer ship inputs too
         int shipSpamGap = 6;         // v2.44: ship feathering is normal control, only taps closer than this are spam
+        int shipTapStreak = 0;       // v2.84: alternating ship taps in a row (straight-fly rhythm)
+        bool lastShipTapDown = false;  // v2.84: direction of the last ship tap in that rhythm
+        bool shipStraight = false;   // v2.84: this click is part of a straight-fly rhythm
+        float runYRange = 0.f;       // v2.84: vertical travel (max-min y) of the current ship run
         bool perfLog = false;        // v2.21: log time / runs / ghost ticks per click
         int simRuns = 0;             // v2.21: predictions run for the current click
         long simTicks = 0;           // v2.21: ghost ticks stepped for the current click
@@ -263,12 +267,11 @@ namespace {
         bool ufoSmart = true;        // v2.40: UFO landing + "could you have flapped again" scoring
         bool spiderSmart = true;     // v2.15: spider-aware landing + "could you have flipped back" scoring
         int retapAt = -1;            // v2.15: ticks after the input at which the ghost taps again (-1 = never)
-        bool robotSmart = true;      // v2.12: robot presses count as safe if some hold length survives
+        bool robotSmart = true;      // v2.12: alternate reachable hold lengths can make a robot press safe
         bool robotAutoRelease = false;  // v2.12: robot auto-release (practice mode only)
         bool autoNormalRuns = false; // v2.14: let auto-release work outside practice too
         CCLabelBMFont* autoTag = nullptr;  // v2.14: on-screen "AUTO-RELEASE ON" tag
-        CCLabelBMFont* watermark = nullptr;  // v2.46: always-on "Click Before Frames" label while the buffer is on
-        bool usedThisAttempt = false;      // v2.46: the buffer was on at some point of this attempt
+        bool usedThisAttempt = false;      // the buffer was on at some point of this attempt (end-screen stats)
         bool learn = true;           // v2.13: per-level memory learned from your runs
         bool fullState = true;       // v2.11.1: copy the full v2.8 player state into the ghost
         int orbWindow = 16;          // v2.6: how far ahead (ticks) an orb may be for that
@@ -560,19 +563,6 @@ namespace {
     }
 
     // v2.14: a run outside practice where auto-release can press for you is marked on screen.
-    // v2.46 watermark: whenever the buffer is on (any stage but OFF) the level shows it, and
-    // can't be turned off, so runs made with the mod are recognisable.
-    void refreshWatermark() {
-        if (!buf.watermark) {
-            return;
-        }
-        // v2.57: hidden in practice mode (practice runs can't be submitted, and it crowded the
-        // checkpoint buttons); always shown in normal mode while the buffer is on.
-        auto* layer = GameManager::get()->m_playLayer;
-        buf.watermark->setVisible(buf.enabled && !(layer && layer->m_isPracticeMode));
-        buf.watermark->setString(fmt::format("Click Before Frames  |  {}", stageText()).c_str());
-    }
-
     void refreshAutoTag() {
         if (!buf.autoTag) {
             return;
@@ -660,7 +650,6 @@ namespace {
         buf.panelLines.clear();
         buf.pathNode = nullptr;
         buf.autoTag = nullptr;
-        buf.watermark = nullptr;
         buf.simulating = false;
         buf.injecting = false;
         buf.rapid = 0;
@@ -1435,6 +1424,7 @@ namespace {
         buf.firstOrbTick = -1;
         buf.orbUsedTick = -1;
         buf.lastOrbTick = -1;
+        buf.runYRange = 0.f;
 
         bool second = dual && buf.ghost2 && p2;
         buf.haveRealRect = buf.ignoreTouching;
@@ -1450,6 +1440,14 @@ namespace {
         buf.held1 = buf.held2 = buf.appliedInput;
         buf.auto1 = buf.auto2 = false;
         buf.autoAt1 = buf.autoAt2 = -1;
+
+        // v2.84 ship straight-fly: remember how wide this run's vertical band gets.
+        // A recoverable ship path that swings through a huge band is not "straight".
+        bool shipRun = p1->m_isShip || (second && p2->m_isShip);
+        float shipMin1 = buf.ghost1->getPosition().y;
+        float shipMax1 = shipMin1;
+        float shipMin2 = second ? buf.ghost2->getPosition().y : 0.f;
+        float shipMax2 = shipMin2;
 
         // v4.6 wave: before a delayed input fires, the ghost is in the opposite state
         // (holding before a delayed release, released before a delayed press).
@@ -1564,6 +1562,20 @@ namespace {
             if (buf.ghost1->m_touchingRings->count() > 0 || (second && buf.ghost2->m_touchingRings->count() > 0)) {
                 buf.lastOrbTick = tick;  // v2.82: still inside an orb at this tick
             }
+            if (shipRun) {
+                if (p1->m_isShip) {
+                    float y = buf.ghost1->getPosition().y;
+                    shipMin1 = std::min(shipMin1, y);
+                    shipMax1 = std::max(shipMax1, y);
+                    buf.runYRange = std::max(buf.runYRange, shipMax1 - shipMin1);
+                }
+                if (second && p2->m_isShip) {
+                    float y = buf.ghost2->getPosition().y;
+                    shipMin2 = std::min(shipMin2, y);
+                    shipMax2 = std::max(shipMax2, y);
+                    buf.runYRange = std::max(buf.runYRange, shipMax2 - shipMin2);
+                }
+            }
             if (buf.recordPath) {
                 buf.recordPath->push_back(buf.ghost1->getPosition());
             }
@@ -1659,6 +1671,7 @@ namespace {
         }
         SimEnd firstEnd = *end;
         int best = first;
+        float bestYRange = buf.runYRange;  // v2.84: ship straight-fly metric of the best run
         if (buf.tryBothOrbs) {
             buf.orbClick = !buf.assumeOrbs;
             int second = simulate(layer, p1, p2, dual, delay, down, horizon, releaseAfter, stopAt, end);
@@ -1666,7 +1679,10 @@ namespace {
             if (firstEnd != SimEnd::StopSearch) {
                 *end = SimEnd::Ok;
             }
-            best = std::max(best, second);
+            if (second > best || (second == best && buf.runYRange < bestYRange)) {
+                best = second;
+                bestYRange = buf.runYRange;
+            }
         }
         // v2.26: some orbs only work when clicked at a specific moment inside them (levels
         // like Orbit). The ghost's orb clicks are also tried later inside the orb.
@@ -1688,8 +1704,9 @@ namespace {
                 int ret = simulate(layer, p1, p2, dual, delay, down, horizon, releaseAfter, stopAt, &lateEnd);
                 buf.orbClickDelay = 0;
                 buf.orbClick = buf.assumeOrbs;
-                if (ret > best) {
+                if (ret > best || (ret == best && buf.runYRange < bestYRange)) {
                     best = ret;
+                    bestYRange = buf.runYRange;
                     if (best >= stopAt && lateEnd != SimEnd::StopSearch) {
                         *end = SimEnd::Ok;  // a late timing reaches the input after all
                     }
@@ -1699,6 +1716,7 @@ namespace {
                 }
             }
         }
+        buf.runYRange = bestYRange;
         return best;
     }
 
@@ -1804,9 +1822,9 @@ namespace {
     // v2.6 orb alignment: a press made a little before reaching an orb would be wasted
     // (or jump off the ground instead). Find the delay that lands the press inside the
     // orb, like the cube buffer does for jumps. Returns that delay, or 0.
-    // v2.83: fullOnly is used for cube presses - an orb path that merely lives a
-    // little longer must not take the click before the normal jump search has had
-    // its chance to find a delay that actually lands safely.
+    // v2.83: fullOnly is used for cube (and v2.84 robot) presses - an orb path
+    // that merely lives a little longer must not take the click before the normal
+    // jump search has had its chance to find a delay that actually lands safely.
     int alignOrb(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int horizon, int releaseAfter, int learned, int* landed,
         bool fullOnly = false) {
         int window = st(std::clamp(buf.orbWindow, 1, MAX_TICKS));
@@ -2012,7 +2030,7 @@ namespace {
         int usual = robotHold.pick(st(20), 50);
         int best = simulateOrbs(layer, p1, p2, dual, delay, true, horizon, usual, target, end);
         robotUsedHold = usual;
-        if (best >= target || *end == SimEnd::StopSearch || quickScore) {
+        if (best >= target || *end == SimEnd::StopSearch || quickScore || !buf.robotSmart) {
             return best;
         }
         for (int hold : ROBOT_HOLDS) {
@@ -2022,13 +2040,14 @@ namespace {
             // v2.81: only holds you can actually end up with count. A longer hold than
             // usual is reachable (your release itself gets buffered, up to the stage's
             // max delay), but nothing can make you let go *earlier* than you do - a
-            // much shorter hold only counts with robot auto-release, which lets go
-            // for you. Before, any theoretical hold made the press "safe", so early
-            // robot presses that needed a short hop you weren't doing never got delayed.
+            // shorter hold only counts with robot auto-release, which lets go for you.
+            // v2.84: the old 6-tick short-hold tolerance still excused early robot
+            // clicks that needed a hop shorter than the one you were actually doing;
+            // only a tick of measurement slack remains.
             if (st(hold) > usual + st(buf.lowLatency ? 4 : buf.ticksAll)) {
                 continue;
             }
-            if (!buf.robotAutoRelease && st(hold) < usual - st(6)) {
+            if (!buf.robotAutoRelease && st(hold) < usual - st(1)) {
                 continue;
             }
             SimEnd e;
@@ -2187,11 +2206,10 @@ namespace {
             return k;
         }
         crashFixed = false;
-        double left = buf.budgetMs - clickMs();
-        if (left < 0.5) {
-            say("prediction budget hit (quick pass only)");
-            return 0;
-        }
+        // v2.84: the full pass gets the other half of the *search* budget. It used
+        // to get only what was left of the whole click budget, so orb alignment and
+        // the base run could spend it all and robot's full hold scoring never ran.
+        double left = buf.budgetMs * 0.5;
         return searchSmallest(horizon, maxDelay, base, landed, score, left, false, needFull);
     }
 
@@ -2206,6 +2224,12 @@ namespace {
         if (ret >= target || *end == SimEnd::StopSearch) {
             return ret;
         }
+        // v2.84 straight-fly: when you're feathering to hold a level line, a tap that
+        // is merely recoverable after a big swing is still mistimed. The recovered
+        // run must stay within about 1.6 blocks vertically (1 block mini); otherwise
+        // this tap counts as a crash and the search retimes it to level the ship.
+        bool miniShip = (p1->m_isShip && p1->m_vehicleSize < 1.f) || (p2 && p2->m_isShip && p2->m_vehicleSize < 1.f);
+        float straightLimit = miniShip ? 30.f : 48.f;
         for (int margin : SHIP_RECOVER) {
             int turnAt = ret - st(margin);
             if (turnAt < st(WAVE_MIN_TURN)) {
@@ -2217,6 +2241,9 @@ namespace {
             SimEnd turnEnd;
             int turned = simulateOrbs(layer, p1, p2, dual, delay, down, length, turnAt, length, &turnEnd);
             if (turned >= length) {
+                if (buf.shipStraight && buf.runYRange > straightLimit) {
+                    continue;  // recoverable, but too wobbly for straight flight
+                }
                 if (buf.captureKiller && buf.baseEscape < 0) {
                     buf.baseEscape = turnAt;
                     buf.baseCrash = ret;
@@ -2953,6 +2980,7 @@ namespace {
 
         buf.isPlayer1 = isPlayer1;
         buf.realInput = down;
+        buf.shipStraight = false;
         if (buf.autoReleased) {
             // the game already let go for you: your real release has nothing left to do
             buf.autoReleased = false;
@@ -3010,6 +3038,19 @@ namespace {
         bool anyWave = p1Wave || (p2 && p2->m_isDart);
         bool mini = (p1Wave && p1->m_vehicleSize < 1.f) || (p2 && p2->m_isDart && p2->m_vehicleSize < 1.f);
 
+        // v2.84: three or more alternating ship taps, each within 24 ticks (6f) of
+        // the last, is a straight-fly rhythm. Those taps are the whole point of ship
+        // buffering, so they are recognised before (and exempt from) the spam guard.
+        if (anyShip && !anyWave) {
+            bool alternating = buf.shipTapStreak > 0 && down != buf.lastShipTapDown && buf.sinceInput <= st(24);
+            buf.shipTapStreak = alternating ? buf.shipTapStreak + 1 : 1;
+            buf.lastShipTapDown = down;
+            buf.shipStraight = buf.shipTapStreak >= 3;
+        }
+        else {
+            buf.shipTapStreak = 0;
+        }
+
         // Wave spam: don't fight fast inputs. Counted for every input, including ones made
         // while a delayed input is waiting (v2.5.1 skipped those, so a spam that started
         // with a buffered click never reached the streak and its taps got collapsed).
@@ -3029,7 +3070,7 @@ namespace {
         bool anyBall = p1->m_isBall || (p2 && p2->m_isBall);
         bool anySwing = p1->m_isSwing || (p2 && p2->m_isSwing);
         if ((anyWave || anyShip || (anyUfo && buf.ufoSmart) || (anyBall && buf.ballSmart) || (anySwing && buf.swingSmart)) &&
-            buf.rapid >= SPAM_STREAK) {
+            !buf.shipStraight && buf.rapid >= SPAM_STREAK) {
             if (buf.explain) {
                 say("pass {}: spam ({} fast inputs in a row, gap < {}t)", down ? "press" : "release", buf.rapid, spamGap);
             }
@@ -3138,7 +3179,7 @@ namespace {
         bool dashRelease = !down && !anyFlyer && (p1->m_isDashing || (p2 && p2->m_isDashing));
         int releaseAfter = -1;
         if (down && !anyWave && !anyShip) {
-            releaseAfter = anyRobot ? robotHold.pick(-1, 50) : holdEstimate();
+            releaseAfter = anyRobot ? robotHold.pick(st(20), 50) : holdEstimate();
         }
 
         // On the ground a press is a jump; only move it onto an orb if the setting says so.
@@ -3163,10 +3204,11 @@ namespace {
                     !p->m_isSwing;
             };
             bool cubeOnly = isCubeMode(p1) && (!p2 || isCubeMode(p2));
+            bool fullOnlyAlign = cubeOnly || anyRobot;  // v2.84: robot gets cube's full-safe orb rule
             int orbLanded = 0;
             int k = memorySaysSkip(sliceOf(p1))
                 ? 0
-                : alignOrb(layer, p1, p2, dual, horizon, releaseAfter, memoryDelay(sliceOf(p1)), &orbLanded, cubeOnly);
+                : alignOrb(layer, p1, p2, dual, horizon, releaseAfter, memoryDelay(sliceOf(p1)), &orbLanded, fullOnlyAlign);
             if (k > 0 && trainInstead(layer, k, down, "orb")) {
                 decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
                 buf.appliedInput = down;
@@ -3186,7 +3228,9 @@ namespace {
         buf.trackMovers = buf.avoidMovers || buf.predictMovers;
         SimEnd end;
         bool cubeStyleWave = anyWave && !buf.waveV46;
-        bool robotPress = down && anyRobot && !anyWave && buf.robotSmart;
+        // v2.84: robot presses are buffered whether "smart" alternate holds are on
+        // or not, exactly like cube; the setting only changes robotScore's holds.
+        bool robotPress = down && anyRobot && !anyWave;
         bool anySpider = p1->m_isSpider || (p2 && p2->m_isSpider);
         bool spiderPress = down && anySpider && !anyWave && !robotPress && buf.spiderSmart;
         bool ballPress = down && anyBall && !anyWave && !anyShip && !robotPress && !spiderPress && buf.ballSmart;  // v2.81
@@ -3375,9 +3419,12 @@ namespace {
         }
         if (saved <= 0) {
             saved = cubeStyleWave ? searchWave(layer, p1, p2, dual, down, horizon, maxDelay, base, &landed)
-                  : robotPress    ? searchTwoPass(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
-                        return robotScore(layer, p1, p2, dual, k, horizon, target, e);
-                    }, true)
+                  : robotPress    ? (buf.robotSmart ? searchTwoPass(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
+                            return robotScore(layer, p1, p2, dual, k, horizon, target, e);
+                        }, true)
+                        : searchSmallest(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
+                            return robotScore(layer, p1, p2, dual, k, horizon, target, e);
+                        }, -1.0, false, true))
                   : spiderPress   ? searchTwoPass(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
                         return spiderScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e);
                     }, true)
@@ -3488,7 +3535,6 @@ namespace {
         saveProfile();
         say("F6 -> {}", stageText());
         refreshAutoTag();
-        refreshWatermark();
         refreshPanel();
     }
 
@@ -3724,7 +3770,6 @@ private:
             readSettings();
             saveProfile();
             refreshHeatmap();
-            refreshWatermark();
         }
         else {
             buf.showPath = value;
@@ -3763,7 +3808,6 @@ private:
         resetPending();
         applyStage();
         readSettings();
-        refreshWatermark();
         refreshPanel();
         say("preset: {} -> {}", which == 0 ? "Safe" : which == 1 ? "Balanced" : "Aggressive", stageText());
         refresh();
@@ -3927,7 +3971,8 @@ public:
     }
 };
 
-// v2.46: the level complete screen says so if the buffer was on during the attempt.
+// Level complete: keep the attempt stats / run-check bookkeeping, without the old
+// "was on" end-screen watermark.
 class $modify(BufEndLevelLayer, EndLevelLayer) {
     void customSetup() {
         EndLevelLayer::customSetup();
@@ -3935,20 +3980,13 @@ class $modify(BufEndLevelLayer, EndLevelLayer) {
             return;
         }
         auto win = CCDirector::get()->getWinSize();
-        auto* label = CCLabelBMFont::create("Click Before Frames was on", "bigFont.fnt");
-        label->setScale(0.35f);
-        label->setColor({ 150, 205, 255 });
-        label->setOpacity(170);
-        label->setAnchorPoint({ 1.f, 1.f });
-        label->setPosition({ win.width - 6.f, win.height - 4.f });
-        this->addChild(label, 100);
         if (attemptStats.saves > 0) {
             auto* stats = CCLabelBMFont::create(attemptSummary().c_str(), "bigFont.fnt");
             stats->setScale(0.28f);
             stats->setColor({ 255, 190, 225 });
             stats->setOpacity(170);
             stats->setAnchorPoint({ 1.f, 1.f });
-            stats->setPosition({ win.width - 6.f, win.height - 16.f });
+            stats->setPosition({ win.width - 6.f, win.height - 4.f });
             this->addChild(stats, 100);
         }
         benchFinish();  // a completed run is the best recording there is
@@ -4176,16 +4214,7 @@ class $modify(BufPlayLayer, PlayLayer) {
         this->addChild(buf.panel);
         refreshPanel();
 
-        buf.watermark = CCLabelBMFont::create("", "bigFont.fnt");
-        buf.watermark->setScale(0.28f);
-        buf.watermark->setColor({ 150, 205, 255 });
-        buf.watermark->setOpacity(153);
-        buf.watermark->setAnchorPoint({ 0.f, 0.f });
-        buf.watermark->setPosition({ 6.f, 4.f });
-        buf.watermark->setZOrder(1000);
-        this->addChild(buf.watermark);
         buf.usedThisAttempt = false;
-        refreshWatermark();
 
         buf.autoTag = CCLabelBMFont::create("AUTO INPUTS ON", "bigFont.fnt");
         buf.autoTag->setScale(0.24f);
@@ -4247,6 +4276,8 @@ class $modify(BufPlayLayer, PlayLayer) {
         benchNeedStart = true;
         endAttempt();
         buf.usedThisAttempt = false;
+        buf.shipTapStreak = 0;
+        buf.shipStraight = false;
         resetPending();
         forgetPress();
         refreshAutoTag();
@@ -4260,7 +4291,6 @@ class $modify(BufPlayLayer, PlayLayer) {
 
     void togglePracticeMode(bool practiceMode) {
         PlayLayer::togglePracticeMode(practiceMode);
-        refreshWatermark();
         refreshAutoTag();
     }
 
