@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.82.0",
+	"version": "v2.84.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -160,7 +160,7 @@
 		"robot-smart": {
 			"type": "bool",
 			"name": "Robot: smart jumps",
-			"description": "A robot press only counts as a crash if no hold length YOU CAN ACTUALLY REACH saves it: your usual hold, or a longer one (your release can be buffered longer, up to your F6 stage). Much shorter holds only count with robot auto-release on, since nothing else can make you let go earlier. Before, any theoretical hold length made a press 'safe', so presses that needed a short hop you weren't doing were never delayed.",
+			"description": "Robot presses and releases are always buffered like every other mode: an early click is delayed, and an early release is held longer. ON additionally lets a press count as safe with a longer hold that your buffered release can actually reach (up to your F6 stage); shorter holds do not count unless robot auto-release is on, since nothing else can make you let go earlier. OFF models only your usual robot hold.",
 			"default": true
 		},
 		"robot-auto-release": {
@@ -202,13 +202,13 @@
 		"ship-buffer": {
 			"type": "bool",
 			"name": "Ship: buffer inputs",
-			"description": "Buffer ship presses and releases, with the same max delay (F6 stage) as every other gamemode. A crash only counts if you couldn't have recovered (the opposite input 8 / 16 / 24 ticks before it is tried), the smallest delay that clears wins, and only very fast taps go straight through (ship spam gap). Off = ship is never touched.",
+			"description": "Buffer ship presses and releases, with the same max delay (F6 stage) as every other gamemode. A crash only counts if you couldn't have recovered (the opposite input 8 / 16 / 24 ticks before it is tried), and the smallest delay that clears wins. Repeated alternating feather taps are recognised as straight-flying: they are never spam-bypassed, and a tap only counts as safe if its recovered path also stays in a tight vertical band, so mistimed taps are retimed to level the ship. Off = ship is never touched.",
 			"default": true
 		},
 		"orb-timing": {
 			"type": "bool",
 			"name": "Orb timing",
-			"description": "For orbs that only work at a specific moment inside them (frame perfects): a press already inside an orb that would crash is re-timed to any tick while you pass through the orb - the middle of the longest fully-safe click window wins - the orb timing that worked at a spot before is tried first, and predictions of later orbs in a chain also try clicking them 3 / 6 / 10 / 14 / 20 ticks into them.",
+			"description": "For orbs that only work at a specific moment inside them (frame perfects): a press already inside an orb that would crash is re-timed to any tick while you pass through the orb - the middle of the longest fully-safe click window wins - the orb timing that worked at a spot before is tried first, and predictions of later orbs in a chain also try clicking them 3 / 6 ticks into them, plus 10 / 14 / 20 ticks while enough prediction budget remains for the main save search.",
 			"default": true
 		},
 		"cube-late-crash": {
@@ -276,7 +276,7 @@
 		"ship-spam-gap": {
 			"type": "int",
 			"name": "Ship: spam gap (ticks)",
-			"description": "Ship is steered by feathering, so only taps closer together than this count as spam and go straight through. The normal spam gap (16) made almost every ship input spam, so ship was barely buffered. 4 ticks = 1 frame at 60fps.",
+			"description": "Ship is steered by feathering, so only taps closer together than this count as spam and go straight through - except an alternating straight-fly rhythm, which is always buffered. The normal spam gap (16) made almost every ship input spam, so ship was barely buffered. 4 ticks = 1 frame at 60fps.",
 			"default": 6,
 			"min": 2,
 			"max": 40
