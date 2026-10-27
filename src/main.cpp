@@ -275,6 +275,7 @@ namespace {
         int simTick = 0;             // v2.6: tick of the current run
         int firstOrbTick = -1;       // v2.6: first tick the current run touched an orb
         int orbUsedTick = -1;        // v2.6: first tick the current run actually used an orb
+        int lastOrbTick = -1;        // v2.82: last tick the current run was still inside an orb
         bool driftCheck = false;     // v2.4: log how far the real player strays from the prediction
         std::vector<CCPoint>* recordPath = nullptr;  // v2.4: ghost1 positions of the current run
         bool showPath = false;       // v2.11: draw the predicted path (F10)
@@ -1433,6 +1434,7 @@ namespace {
         buf.ghostHitPortal = false;
         buf.firstOrbTick = -1;
         buf.orbUsedTick = -1;
+        buf.lastOrbTick = -1;
 
         bool second = dual && buf.ghost2 && p2;
         buf.haveRealRect = buf.ignoreTouching;
@@ -1559,6 +1561,9 @@ namespace {
                 died = true;
                 break;
             }
+            if (buf.ghost1->m_touchingRings->count() > 0 || (second && buf.ghost2->m_touchingRings->count() > 0)) {
+                buf.lastOrbTick = tick;  // v2.82: still inside an orb at this tick
+            }
             if (buf.recordPath) {
                 buf.recordPath->push_back(buf.ghost1->getPosition());
             }
@@ -1640,28 +1645,39 @@ namespace {
         buf.orbClick = buf.assumeOrbs;
         buf.touchedOrb = false;
         int first = simulate(layer, p1, p2, dual, delay, down, horizon, releaseAfter, stopAt, end);
-        if (!buf.tryBothOrbs || !buf.smart || !buf.touchedOrb || first >= stopAt) {
+        if (!buf.smart || !buf.touchedOrb || first >= stopAt) {
             return first;
         }
         SimEnd firstEnd = *end;
-        buf.orbClick = !buf.assumeOrbs;
-        int second = simulate(layer, p1, p2, dual, delay, down, horizon, releaseAfter, stopAt, end);
-        buf.orbClick = buf.assumeOrbs;
-        if (firstEnd != SimEnd::StopSearch) {
-            *end = SimEnd::Ok;
+        int best = first;
+        if (buf.tryBothOrbs) {
+            buf.orbClick = !buf.assumeOrbs;
+            int second = simulate(layer, p1, p2, dual, delay, down, horizon, releaseAfter, stopAt, end);
+            buf.orbClick = buf.assumeOrbs;
+            if (firstEnd != SimEnd::StopSearch) {
+                *end = SimEnd::Ok;
+            }
+            best = std::max(best, second);
         }
-        int best = std::max(first, second);
         // v2.26: some orbs only work when clicked at a specific moment inside them (levels
-        // like Orbit). The ghost's orb clicks are also tried 3 and 6 ticks into the orb.
+        // like Orbit). The ghost's orb clicks are also tried later inside the orb.
+        // v2.82: up to 20 ticks (5 frames) in, was only 3/6 (1.5f) - frame-perfect orb
+        // chains usually need a click deep inside the orb - and it no longer depends on
+        // "also try the other choice" being on, which silently disabled it otherwise.
         if (buf.orbTiming && best < stopAt) {
-            for (int late : { 3, 6 }) {
+            for (int late : { 3, 6, 10, 14, 20 }) {
                 buf.orbClick = true;
                 buf.orbClickDelay = st(late);
                 SimEnd lateEnd;
                 int ret = simulate(layer, p1, p2, dual, delay, down, horizon, releaseAfter, stopAt, &lateEnd);
                 buf.orbClickDelay = 0;
                 buf.orbClick = buf.assumeOrbs;
-                best = std::max(best, ret);
+                if (ret > best) {
+                    best = ret;
+                    if (best >= stopAt && lateEnd != SimEnd::StopSearch) {
+                        *end = SimEnd::Ok;  // a late timing reaches the input after all
+                    }
+                }
                 if (best >= stopAt) {
                     break;
                 }
@@ -1803,6 +1819,11 @@ namespace {
         simulate(layer, p1, p2, dual, 0, true, window + 2, -1, window + 2, &end);
         buf.skipPress = false;
         int touch = buf.firstOrbTick;
+        int lastTouch = buf.lastOrbTick;
+        // v2.82: candidate presses span the whole pass through the orb (the no-press
+        // probe saw exactly how long you're inside it), not just the first 6 ticks
+        // (1.5f). A frame-perfect orb usually has to be clicked deep inside it.
+        int scanEnd = std::min(window, lastTouch >= touch ? lastTouch + 1 : touch + st(6));
         std::string trace;  // v2.42: what was tried, for the explain log
 
         if (touch >= 0 && touch <= window) {
@@ -1811,27 +1832,48 @@ namespace {
             bool nowUses = buf.orbUsedTick >= 0;
             if (nowUses && now < horizon && buf.orbTiming) {
                 // v2.26: ...but crashes. Where in the orb you click changes where it sends
-                // you, so try clicking 1 to 6 ticks later, still inside the orb; the run
-                // that lives longest (and clearly longer than now) wins.
+                // you, so every tick inside the orb is tried. v2.82: the whole pass, not
+                // just +6t - and when several ticks fully survive, the middle of the
+                // longest safe run wins (margin on both sides) instead of the first,
+                // edge-of-the-window tick. No fully-safe tick: longest-lived, as before.
                 int bestRet = -1;
-                for (int k = 1; k <= std::min(window, st(6)); ++k) {
+                int runStart = -1, safeStart = -1, safeEnd = -1;
+                for (int k = 1; k <= scanEnd; ++k) {
+                    if (clickMs() > buf.budgetMs) {
+                        break;
+                    }
                     int ret = simulate(layer, p1, p2, dual, k, true, horizon, releaseAfter, horizon, &end);
+                    bool uses = buf.orbUsedTick >= 0;
                     if (buf.explain) {
-                        trace += fmt::format(" +{}:{}{}", k, ret, buf.orbUsedTick >= 0 ? "o" : "-");
+                        trace += fmt::format(" +{}:{}{}", k, ret, uses ? "o" : "-");
                     }
                     if (end == SimEnd::StopSearch) {
                         break;
                     }
-                    if (buf.orbUsedTick < 0 || ret < std::min(horizon, now + st(12)) || ret <= bestRet) {
+                    if (uses && ret >= horizon) {
+                        if (runStart < 0) {
+                            runStart = k;
+                        }
+                        if (k - runStart >= safeEnd - safeStart) {
+                            safeStart = runStart;
+                            safeEnd = k;
+                        }
+                    }
+                    else {
+                        runStart = -1;
+                    }
+                    if (!uses || ret < std::min(horizon, now + st(12)) || ret <= bestRet) {
                         continue;
                     }
                     bestRet = ret;
                     found = k;
                     *landed = ret;
                     buf.orbWasTiming = true;
-                    if (ret >= horizon) {
-                        break;
-                    }
+                }
+                if (safeStart >= 0) {
+                    found = (safeStart + safeEnd) / 2;
+                    *landed = horizon;
+                    buf.orbWasTiming = true;
                 }
             }
             else if (!nowUses) {
@@ -1840,15 +1882,33 @@ namespace {
                 //    longest wins (earliest on a tie), instead of simply the first that hits
                 //    the orb: where in the orb you click changes where the orb sends you.
                 int bestRet = -1;
-                for (int k = std::max(1, touch - 1); k <= std::min(window, touch + st(6)); ++k) {
+                int runStart = -1, safeStart = -1, safeEnd = -1;
+                for (int k = std::max(1, touch - 1); k <= scanEnd; ++k) {
+                    if (clickMs() > buf.budgetMs) {
+                        break;
+                    }
                     int ret = simulate(layer, p1, p2, dual, k, true, horizon, releaseAfter, horizon, &end);
+                    bool uses = buf.orbUsedTick >= 0;
                     if (buf.explain) {
-                        trace += fmt::format(" +{}:{}{}", k, ret, buf.orbUsedTick >= 0 ? "o" : "-");
+                        trace += fmt::format(" +{}:{}{}", k, ret, uses ? "o" : "-");
                     }
                     if (end == SimEnd::StopSearch) {
                         break;
                     }
-                    if (buf.orbUsedTick < 0 || ret < std::min(now, horizon)) {
+                    // v2.82: track the longest fully-safe tick run, centre picked below
+                    if (uses && ret >= horizon) {
+                        if (runStart < 0) {
+                            runStart = k;
+                        }
+                        if (k - runStart >= safeEnd - safeStart) {
+                            safeStart = runStart;
+                            safeEnd = k;
+                        }
+                    }
+                    else {
+                        runStart = -1;
+                    }
+                    if (!uses || ret < std::min(now, horizon)) {
                         continue;
                     }
                     if (ret > bestRet) {
@@ -1856,9 +1916,10 @@ namespace {
                         found = k;
                         *landed = ret;
                     }
-                    if (ret >= horizon) {
-                        break;  // fully safe: a later tick can't beat it
-                    }
+                }
+                if (safeStart >= 0) {
+                    found = (safeStart + safeEnd) / 2;
+                    *landed = horizon;
                 }
             }
             // v2.42 explain: "+k:ret o" = press k ticks later lives ret ticks and used the orb
@@ -3905,6 +3966,14 @@ $on_mod(Loaded) {
     if (!Mod::get()->getSavedValue<bool>("low-latency-v260", false)) {
         Mod::get()->setSettingValue<bool>("low-latency", false);
         Mod::get()->setSavedValue("low-latency-v260", true);
+    }
+    // v2.82: the orb alignment window doubles once (was 16t = 4f, often shorter than the
+    // approach to a frame-perfect orb); larger custom values are kept as they are.
+    if (!Mod::get()->getSavedValue<bool>("orb-window-v282", false)) {
+        if (Mod::get()->getSettingValue<int64_t>("orb-align-ticks") < 32) {
+            Mod::get()->setSettingValue<int64_t>("orb-align-ticks", 32);
+        }
+        Mod::get()->setSavedValue("orb-window-v282", true);
     }
     readSettings();
     applyStage();
