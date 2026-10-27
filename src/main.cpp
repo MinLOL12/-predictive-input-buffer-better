@@ -54,7 +54,7 @@ namespace {
     constexpr int HOOK_PRIORITY = -1000000;
     constexpr float TICK = 0.25f;
     constexpr size_t PANEL_LINES = 8;
-    constexpr int SPIDER_LAND = 12;  // v2.15: ticks on a surface after a spider input = safe
+    constexpr int SPIDER_LAND = 20;  // v2.15: ticks on a surface after a spider input = safe (v2.81: 12 -> 20, spikes just past the landing were unseen)
     constexpr int SPAM_STREAK = 3;  // this many fast inputs in a row = wave spam
     // v2.78: internal safety ceiling for "unlimited" (= 100 seconds / 6000 frames at 60fps).
     // Never the binding limit in practice: searches end on their own via the time budget,
@@ -193,6 +193,7 @@ namespace {
         int groundHorizon = 130;     // v2.1: how far ahead cube/ball/spider predictions look
         int releaseShift = 0;        // v2.1: delay of the last delivered press, reused for its release
         int waveHorizon = 65;        // v2.2: how far ahead wave predictions look (mini = 15 less)
+        int flyerHorizon = 80;       // v2.81: ship / UFO / swing look-ahead (was fixed at 48t = 12f)
         bool assumeOrbs = true;      // v2.2: the ghost clicks every orb it touches ("calculation mode")
         bool held1 = false, held2 = false;   // button state the ghosts are meant to be in
         bool auto1 = false, auto2 = false;   // an orb auto-click is currently held on this ghost
@@ -454,6 +455,7 @@ namespace {
         buf.practiceOnly = mod->getSettingValue<bool>("practice-only");
         buf.groundHorizon = static_cast<int>(mod->getSettingValue<int64_t>("ground-horizon"));
         buf.waveHorizon = static_cast<int>(mod->getSettingValue<int64_t>("wave-horizon"));
+        buf.flyerHorizon = static_cast<int>(mod->getSettingValue<int64_t>("flyer-horizon"));
         buf.assumeOrbs = mod->getSettingValue<bool>("orb-assume-hit");
         buf.orbClick = buf.assumeOrbs;
         buf.tryBothOrbs = mod->getSettingValue<bool>("orb-try-both");
@@ -1602,7 +1604,7 @@ namespace {
             if (airTicks < st(ballRun ? 2 : 6)) {
                 continue;
             }
-            if (groundTicks > st(ballRun ? 8 : 2)) {
+            if (groundTicks > st(ballRun ? 16 : 2)) {  // v2.81: ball 8 -> 16t of roll before a flip counts as safe
                 safe = true;
                 break;
             }
@@ -1761,6 +1763,13 @@ namespace {
         }
         startDrift(layer, p1, p2, dual, delay, down, horizon, releaseAfter);
         showPaths(layer, p1, p2, dual, delay, down, horizon, releaseAfter);
+    }
+
+    // v2.81: ship / UFO / swing look-ahead from the setting. A fixed 48t (12f) was
+    // shorter than one ship arc, UFO flap or swing flip, so the crash an early input
+    // caused usually landed past the look-ahead: the input read "safe" and passed.
+    int fullFlyerHorizon() {
+        return st(std::clamp(buf.flyerHorizon, 48, 240));
     }
 
     // Full wave look-ahead from the setting (mini = 15 less).
@@ -1930,6 +1939,18 @@ namespace {
             if (std::abs(st(hold) - usual) < st(3)) {
                 continue;
             }
+            // v2.81: only holds you can actually end up with count. A longer hold than
+            // usual is reachable (your release itself gets buffered, up to the stage's
+            // max delay), but nothing can make you let go *earlier* than you do - a
+            // much shorter hold only counts with robot auto-release, which lets go
+            // for you. Before, any theoretical hold made the press "safe", so early
+            // robot presses that needed a short hop you weren't doing never got delayed.
+            if (st(hold) > usual + st(buf.lowLatency ? 4 : buf.ticksAll)) {
+                continue;
+            }
+            if (!buf.robotAutoRelease && st(hold) < usual - st(6)) {
+                continue;
+            }
             SimEnd e;
             int ret = simulateOrbs(layer, p1, p2, dual, delay, true, horizon, st(hold), target, &e);
             if (ret > best) {
@@ -1959,12 +1980,46 @@ namespace {
             if (at < st(SPIDER_MIN_RETAP)) {
                 break;
             }
-            int length = std::min(horizon, at + st(16));
+            int length = std::min(horizon, at + st(24));  // v2.81: flip-back must clear by 6f, not 4f
             buf.retapAt = at;
             SimEnd e;
             int retapped = simulateOrbs(layer, p1, p2, dual, delay, true, length, releaseAfter, length, &e);
             buf.retapAt = -1;
             if (retapped >= length) {
+                if (buf.captureKiller && buf.baseEscape < 0) {
+                    buf.baseEscape = at;
+                    buf.baseCrash = ret;
+                }
+                return horizon;
+            }
+        }
+        return ret;
+    }
+
+    // v2.81 ball scoring, like the spider's: if the flip crashes, try flipping back a
+    // little before the crash; if that survives, you had time to react, so it counts as
+    // safe. Ball used the plain cube run before - and a flip counted as landed-safe after
+    // rolling just 8 ticks (now 16), so an early flip that landed you rolling straight
+    // into a spike just past that was never even seen, let alone delayed.
+    constexpr int BALL_REFLIP[] = { 4, 8, 12 };
+
+    int ballScore(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, int horizon, int releaseAfter, int target,
+        SimEnd* end) {
+        int ret = simulateOrbs(layer, p1, p2, dual, delay, true, horizon, releaseAfter, target, end);
+        if (ret >= target || *end == SimEnd::StopSearch || quickScore) {
+            return ret;
+        }
+        for (int margin : BALL_REFLIP) {
+            int at = ret - st(margin);
+            if (at < st(4)) {
+                break;
+            }
+            int length = std::min(horizon, at + st(24));
+            buf.retapAt = at;
+            SimEnd e;
+            int reflipped = simulateOrbs(layer, p1, p2, dual, delay, true, length, releaseAfter, length, &e);
+            buf.retapAt = -1;
+            if (reflipped >= length) {
                 if (buf.captureKiller && buf.baseEscape < 0) {
                     buf.baseEscape = at;
                     buf.baseCrash = ret;
@@ -2076,7 +2131,9 @@ namespace {
             if (turnAt < st(WAVE_MIN_TURN)) {
                 break;
             }
-            int length = std::min(horizon, turnAt + st(WAVE_ESCAPE));
+            // v2.81: recovery must survive 28t (7f), not the wave's 16t - counting every
+            // barely-recoverable ship crash as safe left most early ship inputs untouched.
+            int length = std::min(horizon, turnAt + st(28));
             SimEnd turnEnd;
             int turned = simulateOrbs(layer, p1, p2, dual, delay, down, length, turnAt, length, &turnEnd);
             if (turned >= length) {
@@ -2108,7 +2165,7 @@ namespace {
             if (at < st(4)) {
                 break;
             }
-            int length = std::min(horizon, at + st(20));
+            int length = std::min(horizon, at + st(28));  // v2.81: reflap must clear by 7f, not 5f
             buf.retapAt = at;
             SimEnd e;
             int reflapped = simulateOrbs(layer, p1, p2, dual, delay, true, length, releaseAfter, length, &e);
@@ -2456,7 +2513,7 @@ namespace {
         bool ship = p1->m_isShip || (p2 && p2->m_isShip);
         bool flyer = isFlying(p1) || (p2 && isFlying(p2));
         bool mini = (p1->m_isDart && p1->m_vehicleSize < 1.f) || (p2 && p2->m_isDart && p2->m_vehicleSize < 1.f);
-        int horizon = wave ? fullWaveHorizon(mini) : st(flyer ? 48 : std::clamp(buf.groundHorizon, 48, 240));
+        int horizon = wave ? fullWaveHorizon(mini) : (flyer ? fullFlyerHorizon() : st(std::clamp(buf.groundHorizon, 48, 240)));
         bool down = !buf.appliedInput;
         int releaseAfter = down && !wave && !ship ? holdEstimate() : -1;
 
@@ -2728,7 +2785,7 @@ namespace {
         if (cap <= 0) {
             return false;
         }
-        int horizon = st(flyer ? 48 : std::clamp(buf.groundHorizon, 48, 240));
+        int horizon = flyer ? fullFlyerHorizon() : st(std::clamp(buf.groundHorizon, 48, 240));
         if (anyWave) {
             horizon = fullWaveHorizon(mini);
         }
@@ -2972,7 +3029,7 @@ namespace {
         }
 
         bool anyFlyer = isFlying(p1) || (p2 && isFlying(p2));  // wave / ufo / swing
-        int horizon = st(anyFlyer ? 48 : std::clamp(buf.groundHorizon, 48, 240));
+        int horizon = anyFlyer ? fullFlyerHorizon() : st(std::clamp(buf.groundHorizon, 48, 240));
         if (anyWave) {
             horizon = fullWaveHorizon(mini);
         }
@@ -3045,6 +3102,7 @@ namespace {
         bool robotPress = down && anyRobot && !anyWave && buf.robotSmart;
         bool anySpider = p1->m_isSpider || (p2 && p2->m_isSpider);
         bool spiderPress = down && anySpider && !anyWave && !robotPress && buf.spiderSmart;
+        bool ballPress = down && anyBall && !anyWave && !anyShip && !robotPress && !spiderPress && buf.ballSmart;  // v2.81
         bool ufoPress = down && anyUfo && !anyWave && !anyShip && buf.ufoSmart;  // v2.40
         // v2.51 swing: one flip, then nothing for the whole look-ahead, crashes into what your
         // next flip would have avoided. Scored like the UFO: could one more flip have saved it?
@@ -3059,6 +3117,7 @@ namespace {
         int base = cubeStyleWave ? waveScore(layer, p1, p2, dual, 0, down, horizon, horizon, &end)
                  : robotPress    ? robotScore(layer, p1, p2, dual, 0, horizon, horizon, &end)
                  : spiderPress   ? spiderScore(layer, p1, p2, dual, 0, horizon, releaseAfter, horizon, &end)
+                 : ballPress     ? ballScore(layer, p1, p2, dual, 0, horizon, releaseAfter, horizon, &end)
                  : ufoPress      ? ufoScore(layer, p1, p2, dual, 0, horizon, releaseAfter, horizon, &end)
                  : shipInput     ? shipScore(layer, p1, p2, dual, 0, down, horizon, horizon, &end)
                                  : simulateOrbs(layer, p1, p2, dual, 0, down, horizon, releaseAfter, horizon, &end);
@@ -3199,6 +3258,7 @@ namespace {
             return cubeStyleWave ? waveScore(layer, p1, p2, dual, k, down, horizon, target, e)
                  : robotPress    ? robotScore(layer, p1, p2, dual, k, horizon, target, e)
                  : spiderPress   ? spiderScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e)
+                 : ballPress     ? ballScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e)
                  : ufoPress      ? ufoScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e)
                  : shipInput     ? shipScore(layer, p1, p2, dual, k, down, horizon, target, e)
                                  : simulateOrbs(layer, p1, p2, dual, k, down, horizon, releaseAfter, target, e);
@@ -3209,7 +3269,8 @@ namespace {
         // +32t..+40t "saves" that died ~130 ticks later, every time); those clicks now go
         // through untouched instead of being moved by up to 10 frames for nothing.
         // v2.75: robot jumps and UFO / swing flaps too (no more half saves there either)
-        int needed = (groundPress || robotPress || ufoPress || robotRelease || dashRelease) ? horizon : std::min(horizon, base + st(12));
+        // v2.81: ship and spider saves must fully clear too, not just live 12 ticks longer
+        int needed = (groundPress || robotPress || ufoPress || robotRelease || dashRelease || spiderPress || shipInput || ballPress) ? horizon : std::min(horizon, base + st(12));
         int learned = memoryDelay(slice);
         if (learned > 0 && learned <= maxDelay && !(anyWave && buf.waveV46)) {
             int target = needed;
@@ -3228,10 +3289,13 @@ namespace {
                     }, true)
                   : spiderPress   ? searchTwoPass(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
                         return spiderScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e);
-                    })
+                    }, true)
+                  : ballPress     ? searchTwoPass(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
+                        return ballScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e);
+                    }, true)
                   : shipInput     ? searchSmallest(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
                         return shipScore(layer, p1, p2, dual, k, down, horizon, target, e);
-                    })
+                    }, -1.0, false, true)
                   : ufoPress      ? searchTwoPass(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
                         return ufoScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e);
                     }, true)
@@ -3378,7 +3442,7 @@ namespace {
         // v2.12 robot: letting go ends the jump boost; judged like a cube jump (landing = safe).
         int horizon = wave ? fullWaveHorizon(mini) : st(std::clamp(buf.groundHorizon, 48, 240));
         if (dash && (p1->m_isDart || p1->m_isBird || p1->m_isSwing)) {
-            horizon = st(48);
+            horizon = fullFlyerHorizon();
         }
         buf.trackMovers = buf.avoidMovers;
         int release = simulateOrbs(layer, p1, p2, dual, 0, false, horizon, -1, horizon, &end);
