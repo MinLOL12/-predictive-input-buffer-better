@@ -1637,6 +1637,15 @@ namespace {
         return safe ? horizon : survived;
     }
 
+    // v2.70: when the current click started being processed. Extra work after a
+    // decision is skipped once the click has used up its time, and v2.83 also uses
+    // this to stop optional deep-orb retries from crowding out delay searches.
+    std::chrono::steady_clock::time_point clickStart;
+
+    double clickMs() {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - clickStart).count();
+    }
+
     // v2.4: simulate() with the orb setting; if that run touched an orb and didn't make
     // it, also try the other choice (click it / skip it) and keep whichever lives longer,
     // like a player who only clicks the orb when they need it.
@@ -1666,6 +1675,13 @@ namespace {
         // "also try the other choice" being on, which silently disabled it otherwise.
         if (buf.orbTiming && best < stopAt) {
             for (int late : { 3, 6, 10, 14, 20 }) {
+                // v2.83: +10/+14/+20 are opportunistic. Running all five for every
+                // dying search candidate made orb-heavy cube searches hit their time
+                // budget before reaching the saving delay, so leave at least half of
+                // the click budget for the search itself.
+                if (late > 6 && clickMs() > buf.budgetMs * 0.5) {
+                    break;
+                }
                 buf.orbClick = true;
                 buf.orbClickDelay = st(late);
                 SimEnd lateEnd;
@@ -1762,15 +1778,6 @@ namespace {
     }
 
     // After every buffer decision: drift check + path view for the input the game gets.
-    // v2.70: when the current click started being processed; the extras after the search
-    // (robust check, drift check, path view) are skipped once the click has used up its
-    // time, so one click can't stall a frame for long. The search itself keeps its budget.
-    std::chrono::steady_clock::time_point clickStart;
-
-    double clickMs() {
-        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - clickStart).count();
-    }
-
     void decided(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, bool down, int horizon, int releaseAfter) {
         memoryNote(p1, delay);
         if (clickMs() > buf.budgetMs * 1.5) {
@@ -1797,7 +1804,11 @@ namespace {
     // v2.6 orb alignment: a press made a little before reaching an orb would be wasted
     // (or jump off the ground instead). Find the delay that lands the press inside the
     // orb, like the cube buffer does for jumps. Returns that delay, or 0.
-    int alignOrb(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int horizon, int releaseAfter, int learned, int* landed) {
+    // v2.83: fullOnly is used for cube presses - an orb path that merely lives a
+    // little longer must not take the click before the normal jump search has had
+    // its chance to find a delay that actually lands safely.
+    int alignOrb(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int horizon, int releaseAfter, int learned, int* landed,
+        bool fullOnly = false) {
         int window = st(std::clamp(buf.orbWindow, 1, MAX_TICKS));
         int found = 0;
         SimEnd end;
@@ -1824,6 +1835,13 @@ namespace {
         // probe saw exactly how long you're inside it), not just the first 6 ticks
         // (1.5f). A frame-perfect orb usually has to be clicked deep inside it.
         int scanEnd = std::min(window, lastTouch >= touch ? lastTouch + 1 : touch + st(6));
+        // v2.83: the old +6t scans always finish again. v2.82 put the budget cut at
+        // the top of the whole-orb loop, so at high FPS it could stop before even
+        // the old range ran. Past these limits the scan is opportunistic, and a
+        // deep candidate must be fully safe (below) before it can take this click
+        // away from the normal cube jump search.
+        int legacyTimingEnd = std::min(window, st(6));
+        int legacyAlignEnd = std::min(scanEnd, touch + st(6));
         std::string trace;  // v2.42: what was tried, for the explain log
 
         if (touch >= 0 && touch <= window) {
@@ -1839,7 +1857,7 @@ namespace {
                 int bestRet = -1;
                 int runStart = -1, safeStart = -1, safeEnd = -1;
                 for (int k = 1; k <= scanEnd; ++k) {
-                    if (clickMs() > buf.budgetMs) {
+                    if (k > legacyTimingEnd && clickMs() > buf.budgetMs) {
                         break;
                     }
                     int ret = simulate(layer, p1, p2, dual, k, true, horizon, releaseAfter, horizon, &end);
@@ -1862,7 +1880,8 @@ namespace {
                     else {
                         runStart = -1;
                     }
-                    if (!uses || ret < std::min(horizon, now + st(12)) || ret <= bestRet) {
+                    if (!uses || ret < std::min(horizon, now + st(12)) || ret <= bestRet ||
+                        ((fullOnly || k > legacyTimingEnd) && ret < horizon)) {
                         continue;
                     }
                     bestRet = ret;
@@ -1884,7 +1903,7 @@ namespace {
                 int bestRet = -1;
                 int runStart = -1, safeStart = -1, safeEnd = -1;
                 for (int k = std::max(1, touch - 1); k <= scanEnd; ++k) {
-                    if (clickMs() > buf.budgetMs) {
+                    if (k > legacyAlignEnd && clickMs() > buf.budgetMs) {
                         break;
                     }
                     int ret = simulate(layer, p1, p2, dual, k, true, horizon, releaseAfter, horizon, &end);
@@ -1908,7 +1927,7 @@ namespace {
                     else {
                         runStart = -1;
                     }
-                    if (!uses || ret < std::min(now, horizon)) {
+                    if (!uses || ret < std::min(now, horizon) || ((fullOnly || k > legacyAlignEnd) && ret < horizon)) {
                         continue;
                     }
                     if (ret > bestRet) {
@@ -3139,8 +3158,15 @@ namespace {
             }
         }
         if (down && !anyWave && !anyShip && buf.orbAlign && buf.smart && (!grounded || buf.orbAlignGround)) {
+            auto isCubeMode = [](PlayerObject* p) {
+                return p && !p->m_isShip && !p->m_isDart && !p->m_isBird && !p->m_isBall && !p->m_isRobot && !p->m_isSpider &&
+                    !p->m_isSwing;
+            };
+            bool cubeOnly = isCubeMode(p1) && (!p2 || isCubeMode(p2));
             int orbLanded = 0;
-            int k = memorySaysSkip(sliceOf(p1)) ? 0 : alignOrb(layer, p1, p2, dual, horizon, releaseAfter, memoryDelay(sliceOf(p1)), &orbLanded);
+            int k = memorySaysSkip(sliceOf(p1))
+                ? 0
+                : alignOrb(layer, p1, p2, dual, horizon, releaseAfter, memoryDelay(sliceOf(p1)), &orbLanded, cubeOnly);
             if (k > 0 && trainInstead(layer, k, down, "orb")) {
                 decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
                 buf.appliedInput = down;
@@ -3286,8 +3312,12 @@ namespace {
         // unlimited stage, or a click that landed just before the spike - the click plausibly
         // WAS an early click for that obstacle, and the search runs: how early you were is
         // how much delay it needs. With small stages the old skip still applies (perf).
+        // v2.83: only when the press started on the ground. For a press made while
+        // falling, the first touchdown recorded by the base run can be the landing
+        // that starts the buffered jump - not the landing after it - so rollGap can
+        // include that whole jump and skip exactly the cube clicks buffering is for.
         int rollGap = buf.baseTouchTick >= 0 ? base - buf.baseTouchTick : base;
-        if (groundPress && buf.lateCrash > 0 && base >= st(buf.lateCrash) && buf.baseTouchedDown && rollGap >= maxDelay) {
+        if (groundPress && grounded && buf.lateCrash > 0 && base >= st(buf.lateCrash) && buf.baseTouchedDown && rollGap >= maxDelay) {
             if (buf.explain) {
                 say("pass press: crash at {}t is {}t after the jump lands, beyond the {}t buffer (late crash rule)", base, rollGap,
                     maxDelay);

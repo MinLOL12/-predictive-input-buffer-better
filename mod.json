@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.82.0",
+	"version": "v2.83.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -208,7 +208,7 @@
 		"orb-timing": {
 			"type": "bool",
 			"name": "Orb timing",
-			"description": "For orbs that only work at a specific moment inside them (frame perfects): a press already inside an orb that would crash is re-timed to any tick while you pass through the orb - the middle of the longest fully-safe click window wins - the orb timing that worked at a spot before is tried first, and predictions of later orbs in a chain also try clicking them 3 / 6 / 10 / 14 / 20 ticks into them.",
+			"description": "For orbs that only work at a specific moment inside them (frame perfects): a press already inside an orb that would crash is re-timed to any tick while you pass through the orb - the middle of the longest fully-safe click window wins - the orb timing that worked at a spot before is tried first, and predictions of later orbs in a chain also try clicking them 3 / 6 ticks into them, plus 10 / 14 / 20 ticks while enough prediction budget remains for the main save search.",
 			"default": true
 		},
 		"cube-late-crash": {
