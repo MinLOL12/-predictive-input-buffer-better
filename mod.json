@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.81.0",
+	"version": "v2.82.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -122,8 +122,8 @@
 		"orb-align-ticks": {
 			"type": "int",
 			"name": "Orb alignment: max delay (ticks)",
-			"description": "How early a press may be and still be moved onto the orb. No frame cap. 16 ticks = 4 frames at 60fps, 240 ticks = 1 second.",
-			"default": 16,
+			"description": "How early a press may be and still be moved onto the orb - and how far into the orb an already-inside press may be re-timed. Every tick while you pass through the orb is tried and the middle of the safe click window is used, which is what makes frame-perfect orbs much easier. No frame cap. 32 ticks = 8 frames at 60fps, 240 ticks = 1 second.",
+			"default": 32,
 			"min": 1,
 			"max": 24000
 		},
@@ -208,7 +208,7 @@
 		"orb-timing": {
 			"type": "bool",
 			"name": "Orb timing",
-			"description": "For orbs that only work at a specific moment inside them: a press already inside an orb that would crash is moved 1-6 ticks later in the orb if that survives, the orb timing that worked at a spot before is tried first, and predictions also try clicking later orbs 3 and 6 ticks into them.",
+			"description": "For orbs that only work at a specific moment inside them (frame perfects): a press already inside an orb that would crash is re-timed to any tick while you pass through the orb - the middle of the longest fully-safe click window wins - the orb timing that worked at a spot before is tried first, and predictions of later orbs in a chain also try clicking them 3 / 6 / 10 / 14 / 20 ticks into them.",
 			"default": true
 		},
 		"cube-late-crash": {
