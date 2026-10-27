@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.79.0",
+	"version": "v2.80.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -12,7 +12,7 @@
 		"custom-ticks": {
 			"type": "int",
 			"name": "Custom stage: max delay (ticks)",
-			"description": "Max delay for the CUSTOM F6 stage, for EVERY gamemode: cube, wave, ship, ball, UFO, robot, spider and swing all use this same value. This is how EARLY you may click: an early click is held back tick by tick until the first timing whose path survives, so 10 frames early = delayed (up to) 10 frames. No frame cap: type any number (4 ticks = 1 frame at 60fps, 240 ticks = 1 second). For no limit at all, use the UNLIMITED F6 stage instead. Very big delays also need a bigger 'Prediction time budget' or the search runs out of time before reaching them.",
+			"description": "Max delay for the CUSTOM F6 stage, for EVERY gamemode: cube, wave, ship, ball, UFO, robot, spider and swing all use this same value. This is how EARLY you may click or let go: an early input is held back tick by tick until the first timing whose path survives, so 10 frames early = delayed (up to) 10 frames. No frame cap: type any number (4 ticks = 1 frame at 60fps, 240 ticks = 1 second). For no limit at all, use the UNLIMITED F6 stage instead. Very big delays also need a bigger 'Prediction time budget' or the search runs out of time before reaching them.",
 			"default": 40,
 			"min": 0,
 			"max": 24000
