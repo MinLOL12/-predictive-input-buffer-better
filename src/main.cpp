@@ -2699,6 +2699,103 @@ namespace {
         return text;
     }
 
+    // v2.80 queued early-release rescue. Inputs made while a delayed press is still
+    // waiting used to be shifted blindly to preserve your rhythm, so letting go too soon
+    // after a buffered wave / ship turn (or robot jump) was never checked: the shifted
+    // release could drop you straight onto a hazard just past the turn. When exactly one
+    // press is pending, the real sequence (press when queued, release after the shifted
+    // hold) is simulated from now. If that release crashes right after letting go, longer
+    // holds are tried and the release is queued at the first hold that clears the hazard:
+    // how early you let go is how much longer you are kept holding. Anything else keeps
+    // the old shift, so normal tap/hold rhythm is untouched.
+    bool rescueQueuedRelease(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, bool anyWave, bool anyShip, bool mini,
+        int early) {
+        if (buf.queue.size() != 1 || !buf.queue.front().down) {
+            return false;
+        }
+        bool anyRobot = p1->m_isRobot || (p2 && p2->m_isRobot);
+        bool flyer = anyWave || anyShip;
+        if (!flyer && !anyRobot) {
+            return false;  // hold length only steers wave / ship / robot here (dash ends are main-path releases)
+        }
+        int pressIn = std::max(0, buf.queue.front().ticksLeft);
+        int naturalIn = std::max({ buf.shift - early, pressIn, 0 });
+        int naturalHold = naturalIn - pressIn;
+        int cap = st(buf.ticksAll);
+        if (buf.lowLatency) {
+            cap = std::min(cap, st(4));
+        }
+        if (cap <= 0) {
+            return false;
+        }
+        int horizon = st(flyer ? 48 : std::clamp(buf.groundHorizon, 48, 240));
+        if (anyWave) {
+            horizon = fullWaveHorizon(mini);
+        }
+        int clearTicks = st(20);  // survived this long after letting go = past the close hazard
+        auto accepted = [&](int hold, int ret) {
+            return ret >= horizon || (flyer && ret - hold >= clearTicks);
+        };
+
+        SimEnd end;
+        int natural = simulateOrbs(layer, p1, p2, dual, pressIn, true, horizon, naturalHold, horizon, &end);
+        // StopSearch: the queued press itself never gets to fire. natural < naturalHold:
+        // the crash is while still holding, so holding longer can't change it. A flyer
+        // that lives clearTicks past letting go has time for your next input: not "too soon".
+        if (end == SimEnd::StopSearch || natural >= horizon || natural < naturalHold ||
+            (flyer && natural - naturalHold >= clearTicks)) {
+            return false;
+        }
+
+        int foundHold = -1;
+        int foundRet = 0;
+        for (int hold = naturalHold + 1; hold <= naturalHold + cap; ++hold) {
+            if (clickMs() > buf.budgetMs) {
+                if (buf.explain) {
+                    say("queued release: prediction budget hit at hold {}t", hold);
+                }
+                break;
+            }
+            SimEnd e;
+            int ret = simulateOrbs(layer, p1, p2, dual, pressIn, true, horizon, hold, horizon, &e);
+            if (e == SimEnd::StopSearch || ret < hold) {
+                break;  // dies before this release would fire: longer holds die the same way
+            }
+            if (accepted(hold, ret)) {
+                foundHold = hold;
+                foundRet = ret;
+                break;
+            }
+        }
+        if (foundHold < 0) {
+            return false;
+        }
+        int extra = foundHold - naturalHold;
+        if (buf.avoidMovers) {
+            SimEnd e;
+            buf.sawMover = false;
+            buf.trackMovers = true;
+            simulateOrbs(layer, p1, p2, dual, pressIn, true, horizon, foundHold, horizon, &e);
+            buf.trackMovers = false;
+            if (buf.sawMover) {
+                if (buf.explain) {
+                    say("queued release +{}t skipped: moving objects ahead", extra);
+                }
+                return false;
+            }
+        }
+        if (trainInstead(layer, extra, false, "queued")) {
+            return false;  // hint only: the caller queues the normal shifted release
+        }
+        noteSave(layer, extra);
+        say("SAVED queued release +{}t ({:g}f): let go {}t after the delayed press, crash {}t after letting go -> {}", extra,
+            extra * TICK, naturalHold, std::max(0, natural - naturalHold),
+            foundRet >= horizon ? std::string("safe") : fmt::format("{}t clear", std::max(0, foundRet - foundHold)));
+        buf.shift += extra;  // follow-up inputs keep their spacing after the rescued release
+        queueInput(pressIn + foundHold, false);
+        return true;
+    }
+
     bool intercept(GJBaseGameLayer* self, bool down, bool isPlayer1) {
         clickStart = std::chrono::steady_clock::now();
         clickBudget();
@@ -2837,6 +2934,11 @@ namespace {
         // A delay is in progress: shift this input by the same amount so your
         // rhythm (tap length, hold length, follow-up clicks) is preserved.
         if (!buf.queue.empty()) {
+            // v2.80: exception - a release let go too soon after a still-queued press is
+            // checked (and held longer) if it would crash right after letting go.
+            if (!down && rescueQueuedRelease(layer, p1, p2, dual, anyWave, anyShip, mini, early)) {
+                return true;
+            }
             int after = buf.queue.back().ticksLeft;
             // low latency: a new press isn't shifted, it goes right after what's already queued
             queueInput(buf.lowLatency && down ? after : std::max(buf.shift - early, after), down);
@@ -2892,6 +2994,11 @@ namespace {
         // on the hold, so use your usual robot hold (once known); everything else (cube,
         // ball, ufo, spider, swing) re-triggers while held, so model a tap.
         bool anyRobot = p1->m_isRobot || (p2 && p2->m_isRobot);
+        // v2.80: letting go of a robot jump (or a grounded dash) too soon is judged like
+        // the press: a save must land safely, not just live 12 ticks longer and then die
+        // in the same jump / fall.
+        bool robotRelease = !down && anyRobot && !anyWave;
+        bool dashRelease = !down && !anyFlyer && (p1->m_isDashing || (p2 && p2->m_isDashing));
         int releaseAfter = -1;
         if (down && !anyWave && !anyShip) {
             releaseAfter = anyRobot ? robotHold.pick(-1, 50) : holdEstimate();
@@ -3102,7 +3209,7 @@ namespace {
         // +32t..+40t "saves" that died ~130 ticks later, every time); those clicks now go
         // through untouched instead of being moved by up to 10 frames for nothing.
         // v2.75: robot jumps and UFO / swing flaps too (no more half saves there either)
-        int needed = (groundPress || robotPress || ufoPress) ? horizon : std::min(horizon, base + st(12));
+        int needed = (groundPress || robotPress || ufoPress || robotRelease || dashRelease) ? horizon : std::min(horizon, base + st(12));
         int learned = memoryDelay(slice);
         if (learned > 0 && learned <= maxDelay && !(anyWave && buf.waveV46)) {
             int target = needed;
@@ -3129,7 +3236,7 @@ namespace {
                         return ufoScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e);
                     }, true)
                                   : searchDelay(layer, p1, p2, dual, down, anyWave, horizon, maxDelay, releaseAfter, base, &landed,
-                                        groundPress);
+                                        groundPress || robotRelease || dashRelease);
         }
         if (saved <= 0) {
             say("no save: {}{} dies in {}t (max {}t, best +{}t -> {}t of {}){}", down ? "press" : "release", tickTag, base, maxDelay,
