@@ -192,7 +192,7 @@ namespace {
         bool practiceOnly = true;    // v2.1: only buffer in practice mode
         int groundHorizon = 130;     // v2.1: how far ahead cube/ball/spider predictions look
         int releaseShift = 0;        // v2.1: delay of the last delivered press, reused for its release
-        int waveHorizon = 65;        // v2.2: how far ahead wave predictions look (mini = 15 less)
+        int waveHorizon = 96;        // v2.2: how far ahead wave predictions look (mini = 15 less)
         int flyerHorizon = 80;       // v2.81: ship / UFO / swing look-ahead (was fixed at 48t = 12f)
         bool assumeOrbs = true;      // v2.2: the ghost clicks every orb it touches ("calculation mode")
         bool held1 = false, held2 = false;   // button state the ghosts are meant to be in
@@ -212,7 +212,7 @@ namespace {
         bool autoRelease = false;    // v2.4: wave auto-release (practice mode only)
         int autoWindow = 6;          // v2.4: hold must die within this many ticks to auto-release
         bool autoReleased = false;   // v2.4: we released for you; your real release is swallowed
-        int spamGap = 16;            // v2.5.2: inputs closer than this (ticks) count toward wave spam
+        int spamGap = 6;            // v2.5.2: inputs closer than this (ticks) count toward wave spam
         bool waveMargin = true;      // v2.10: center wave saves in the safe window (1 tick of room)
         bool waveV46 = false;        // v2.7: use the old v4.6 wave rules instead of the cube-style ones
         bool orbAlign = true;        // v2.6: hold an early press back until the ghost is inside the orb
@@ -1477,6 +1477,28 @@ namespace {
         // often lands right next to a spike on the new surface, so short flips count as
         // landings and the landing has to last longer before the flip is called safe.
         bool ballRun = buf.ballSmart && (p1->m_isBall || (second && p2->m_isBall));
+        // v2.85 ceiling guard: a cube / robot whose head side touches a solid
+        // while moving into it and whose upward (head-ward) velocity is cancelled
+        // has hit the ceiling. With an H block (or an F block / safe-flip grace)
+        // the game arms that hit and it is a survivable bonk; without one it is
+        // treated as the crash it is in a real run, even on the corner cases
+        // where the game's own destroy check lets the ghost slip through. The
+        // search then retimes the jump so it clears - or passes - the block above.
+        auto unprotectedHeadHit = [](PlayerObject* g, double preVy) {
+            if (!g || g->m_isPlatformer || g->m_isShip || g->m_isBird || g->m_isBall || g->m_isDart || g->m_isSpider ||
+                g->m_isSwing || g->m_isOnGround || g->m_isOnSlope) {
+                return false;
+            }
+            if (g->isSafeHeadTest() || g->m_stateFlipGravity > 0) {
+                return false;
+            }
+            auto* log = g->m_isUpsideDown ? g->m_collisionLogBottom : g->m_collisionLogTop;
+            if (!log || log->count() == 0) {
+                return false;
+            }
+            double dir = g->m_isUpsideDown ? -1.0 : 1.0;
+            return preVy * dir > 0.01 && g->m_yVelocity * dir <= 0.01;
+        };
         int total = delay + horizon;
         int survived = 0;
         int airTicks = 0;
@@ -1551,11 +1573,19 @@ namespace {
 
             // v2.36: after a mid-tick (CBF) click the game finishes the tick and then runs its
             // normal collision check with the full step, so the ghost does the same.
+            double preHitVy1 = buf.ghost1->m_yVelocity;
+            double preHitVy2 = second ? buf.ghost2->m_yVelocity : 0.0;
             checkGhost(layer, buf.ghost1, dt);
             if (!buf.ghostDied && second) {
                 checkGhost(layer, buf.ghost2, dt);
             }
             if (buf.ghostDied) {
+                died = true;
+                break;
+            }
+            if (tick >= delay &&
+                (unprotectedHeadHit(buf.ghost1, preHitVy1) || (second && unprotectedHeadHit(buf.ghost2, preHitVy2)))) {
+                buf.ghostDied = true;
                 died = true;
                 break;
             }
@@ -1816,7 +1846,7 @@ namespace {
     // Full wave look-ahead from the setting (mini = 15 less).
     int fullWaveHorizon(bool mini) {
         int wh = std::clamp(buf.waveHorizon, 20, 160);
-        return st(mini ? std::max(20, wh - 15) : wh);  // v4.6: 65 normal / 50 mini
+        return st(mini ? std::max(20, wh - 15) : wh);  // v2.85 default: 96 normal / 81 mini
     }
 
     // v2.6 orb alignment: a press made a little before reaching an orb would be wasted
@@ -1979,9 +2009,14 @@ namespace {
     // corridor, where you'd simply turn. So: if the run crashes, try turning back a bit
     // before the crash; if that turn survives, you had time to react and the run counts
     // as safe. Only crashes you couldn't have turned away from count as deaths.
-    // v2.10: three turn points are tried (4, 8 and 12 ticks before the crash) instead of
-    // one, so "you could have turned away" is found whenever it's true.
-    constexpr int WAVE_TURN_MARGINS[] = { 4, 8, 12 };
+    // v2.10: several turn points before the crash are tried instead of one, so
+    // "you could have turned away" is found whenever it's true. v2.85: one
+    // working turn-away point is no longer enough - two different ones (of
+    // 4/8/12/16t before the crash) must survive the escape, so a line that only
+    // lives by a single frame-perfect panic turn is not called safe. The escape
+    // stays 16t: in mini / fastest corridors the next wall can arrive sooner
+    // than a longer escape, and those parts still have to be judgeable.
+    constexpr int WAVE_TURN_MARGINS[] = { 4, 8, 12, 16 };
     constexpr int WAVE_MIN_TURN = 6;      // a turn sooner than this after the input is too fast to count
     constexpr int WAVE_ESCAPE = 16;       // the turn must then survive this many ticks
 
@@ -1993,6 +2028,7 @@ namespace {
         if (ret >= target || *end == SimEnd::StopSearch) {
             return ret;
         }
+        int escapes = 0;
         for (int margin : WAVE_TURN_MARGINS) {
             int turnAt = ret - st(margin);
             if (turnAt < st(WAVE_MIN_TURN)) {
@@ -2006,7 +2042,9 @@ namespace {
                     buf.baseEscape = turnAt;
                     buf.baseCrash = ret;
                 }
-                return horizon;
+                if (++escapes >= 2) {
+                    return horizon;
+                }
             }
         }
         return ret;
@@ -2295,39 +2333,106 @@ namespace {
         marginUsed = false;
         using clock = std::chrono::steady_clock;
         auto start = clock::now();
-        int target = std::min(horizon, base + st(12));
+        auto overBudget = [&] {
+            return std::chrono::duration<double, std::milli>(clock::now() - start).count() > buf.budgetMs;
+        };
+        // v2.85: a wave save has to clear the whole look-ahead under the recovery
+        // rule, not merely live 12t longer than turning now (that half-save still
+        // died at the next wall of the same corridor). With the safety margin on,
+        // the first fully-safe delay also no longer wins by itself: delays around
+        // it are scanned and the middle of the longest fully-safe run is used, so
+        // the turn has room on both sides like a centred orb click.
+        int target = horizon;
         dbgBestK = 0;
         dbgBestRet = -1;
+        int runStart = -1;
+        int bestRunStart = -1;
+        int bestRunEnd = -1;
+        int bestRunLen = 0;
+        auto finishRun = [&](int from, int to) {
+            int len = to - from + 1;
+            if (len > bestRunLen) {
+                bestRunLen = len;
+                bestRunStart = from;
+                bestRunEnd = to;
+            }
+        };
+        int scanCap = maxDelay;
+        int lastK = 0;
+        // Fallback when no delay fully clears: the delay that most clearly beats
+        // the natural ~2t-per-tick a later turn gains against the opposite wall.
+        int bestPartialK = 0;
+        int bestPartialRet = base;
+        int bestPartialScore = base;
         for (int k = 1; k <= maxDelay; ++k) {
             SimEnd end;
             int ret = waveScore(layer, p1, p2, dual, k, down, horizon, target, &end);
+            lastK = k;
             if (ret > dbgBestRet) {
                 dbgBestRet = ret;
                 dbgBestK = k;
             }
             if (end == SimEnd::StopSearch) {
-                return 0;
+                if (runStart >= 0) {
+                    finishRun(runStart, k - 1);
+                    runStart = -1;
+                }
+                break;
             }
             if (ret >= target) {
-                *landed = ret;
-                // v2.10 safety margin: the first safe delay is the one that only just clears
-                // the spike corner, so a pixel of difference in the real run can still clip
-                // it. If the next two delays are safe too, take the middle one: a tick of
-                // room on both sides.
-                if (buf.waveMargin && k + 2 <= maxDelay) {
-                    SimEnd e1, e2;
-                    if (waveScore(layer, p1, p2, dual, k + 1, down, horizon, target, &e1) >= target &&
-                        waveScore(layer, p1, p2, dual, k + 2, down, horizon, target, &e2) >= target) {
-                        marginUsed = true;
-                        return k + 1;
+                if (!buf.waveMargin) {
+                    *landed = ret;
+                    return k;
+                }
+                if (runStart < 0) {
+                    runStart = k;
+                    if (scanCap == maxDelay) {
+                        scanCap = std::min(maxDelay, k + st(32));
                     }
                 }
-                return k;
             }
-            if (std::chrono::duration<double, std::milli>(clock::now() - start).count() > buf.budgetMs) {
-                say("prediction budget hit at +{} ticks", k);
-                return 0;
+            else if (runStart >= 0) {
+                finishRun(runStart, k - 1);
+                runStart = -1;
             }
+            else if (bestRunLen == 0) {
+                int score = ret - 2 * k;
+                if (score > bestPartialScore || (score == bestPartialScore && ret > bestPartialRet)) {
+                    bestPartialScore = score;
+                    bestPartialRet = ret;
+                    bestPartialK = k;
+                }
+            }
+            if (k >= scanCap) {
+                if (runStart >= 0) {
+                    finishRun(runStart, k);
+                    runStart = -1;
+                }
+                break;
+            }
+            if (overBudget()) {
+                if (runStart >= 0) {
+                    finishRun(runStart, k);
+                    runStart = -1;
+                }
+                if (bestRunLen == 0) {
+                    say("prediction budget hit at +{} ticks", k);
+                }
+                break;
+            }
+        }
+        if (runStart >= 0) {
+            finishRun(runStart, lastK);
+        }
+        if (bestRunLen > 0) {
+            int chosen = (bestRunStart + bestRunEnd) / 2;
+            marginUsed = chosen > bestRunStart;
+            *landed = horizon;
+            return chosen;
+        }
+        if (bestPartialK > 0 && bestPartialRet >= base + st(12) && bestPartialScore >= base + st(6)) {
+            *landed = bestPartialRet;
+            return bestPartialK;
         }
         return 0;
     }
@@ -3059,6 +3164,13 @@ namespace {
         // v2.44: ship is steered by feathering, so it gets its own, much shorter spam gap;
         // otherwise nearly every ship input counted as spam and was never buffered.
         int spamGap = st(anyShip && !anyWave ? std::clamp(buf.shipSpamGap, 2, 40) : std::clamp(buf.spamGap, 4, 40));
+        // v2.85: in cube-style wave, turns a frame apart are control in the
+        // hardest corridors, not spam. Only sub-frame mashing (gap < 4t) counts,
+        // and it takes six in a row, so Sakupen-style zigzags stay buffered.
+        bool cubeWaveSpam = anyWave && !buf.waveV46;
+        if (cubeWaveSpam) {
+            spamGap = std::min(spamGap, st(4));
+        }
         if (buf.sinceInput < spamGap) {
             ++buf.rapid;
         }
@@ -3069,8 +3181,9 @@ namespace {
         bool anyUfo = p1->m_isBird || (p2 && p2->m_isBird);
         bool anyBall = p1->m_isBall || (p2 && p2->m_isBall);
         bool anySwing = p1->m_isSwing || (p2 && p2->m_isSwing);
+        int spamStreak = cubeWaveSpam ? 6 : SPAM_STREAK;
         if ((anyWave || anyShip || (anyUfo && buf.ufoSmart) || (anyBall && buf.ballSmart) || (anySwing && buf.swingSmart)) &&
-            !buf.shipStraight && buf.rapid >= SPAM_STREAK) {
+            !buf.shipStraight && buf.rapid >= spamStreak) {
             if (buf.explain) {
                 say("pass {}: spam ({} fast inputs in a row, gap < {}t)", down ? "press" : "release", buf.rapid, spamGap);
             }
@@ -3405,7 +3518,9 @@ namespace {
         // through untouched instead of being moved by up to 10 frames for nothing.
         // v2.75: robot jumps and UFO / swing flaps too (no more half saves there either)
         // v2.81: ship and spider saves must fully clear too, not just live 12 ticks longer
-        int needed = (groundPress || robotPress || ufoPress || robotRelease || dashRelease || spiderPress || shipInput || ballPress) ? horizon : std::min(horizon, base + st(12));
+        // v2.85: cube-style wave too - a learned or robust-checked wave delay has
+        // to clear the whole look-ahead, not just outlive turning now by 12t.
+        int needed = (groundPress || robotPress || ufoPress || robotRelease || dashRelease || spiderPress || shipInput || ballPress || cubeStyleWave) ? horizon : std::min(horizon, base + st(12));
         int learned = memoryDelay(slice);
         if (learned > 0 && learned <= maxDelay && !(anyWave && buf.waveV46)) {
             int target = needed;
@@ -4043,6 +4158,18 @@ $on_mod(Loaded) {
         }
         Mod::get()->setSavedValue("orb-window-v282", true);
     }
+    // v2.85: wave gets the longer look-ahead once (65t ended before the next
+    // turn of a tight corridor) and the old 16t spam default becomes 6t, so
+    // controlled fast wave turns are buffered instead of bypassed as spam.
+    if (!Mod::get()->getSavedValue<bool>("wave-v285", false)) {
+        if (Mod::get()->getSettingValue<int64_t>("wave-horizon") == 65) {
+            Mod::get()->setSettingValue<int64_t>("wave-horizon", 96);
+        }
+        if (Mod::get()->getSettingValue<int64_t>("wave-spam-gap") == 16) {
+            Mod::get()->setSettingValue<int64_t>("wave-spam-gap", 6);
+        }
+        Mod::get()->setSavedValue("wave-v285", true);
+    }
     readSettings();
     applyStage();
     if (buf.console) {
@@ -4644,6 +4771,27 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
             }
             auto type = static_cast<unsigned>(object->m_objectType);
             uint64_t bit = type < 64 ? (1ull << type) : 0;
+            // v2.85: the letter blocks are Modifier objects (D 1755, J 1813,
+            // S 1829, H 1859, F 2866) and were filtered out of every ghost run,
+            // so the ghost never armed wave-slide, no-auto-jump, dash-stop,
+            // head-hit or head-flip state. It died on H-block ceilings and
+            // D-block wave slides the real player survives - and, the other way
+            // round, could not tell an H-protected ceiling from a lethal one.
+            // Arm the ghost exactly like the game does (PlayerObject::touchedObject)
+            // without firing the object as a trigger into the real level.
+            if (object->m_objectType == GameObjectType::Modifier && !object->m_isDisabled && !object->m_isGroupDisabled) {
+                int id = object->m_objectID;
+                if (id == 1755 || id == 1813 || id == 1829 || id == 1859 || id == 2866) {
+                    if (!haveRect) {
+                        ghostRect = player->getObjectRect();
+                        haveRect = true;
+                    }
+                    if (ghostRect.intersectsRect(object->getObjectRect())) {
+                        player->touchedObject(object);
+                    }
+                }
+                continue;
+            }
             if (keep & bit) {
                 // v2.31: a hazard you're touching right now while alive is one the game doesn't
                 // let kill you (a spike made to follow the player, noclip...). Seen in GRIEF:
