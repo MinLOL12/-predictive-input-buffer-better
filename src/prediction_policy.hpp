@@ -4,6 +4,21 @@
 
 // Policy values are in physics ticks; callers convert 240 Hz constants with st().
 namespace prediction_policy {
+    // Never reorder a pending input sequence. Otherwise let an intentional press on
+    // an orb reach the game unchanged, regardless of the predicted outcome.
+    constexpr bool passOrbPress(bool down, bool touchingOrb, bool queueEmpty) {
+        return down && touchingOrb && queueEmpty;
+    }
+
+    template <typename T>
+    constexpr bool sameOrb(T const* target, T const* used) {
+        return target && target == used;
+    }
+
+    constexpr bool betterOrbFallback(bool enabled, bool sameTarget, int survival, int bestSurvival) {
+        return enabled && sameTarget && survival > bestSurvival;
+    }
+
     template <typename Player>
     bool invertedWave(Player const* p1, Player const* p2, bool dual) {
         return (p1 && p1->m_isDart && p1->m_isUpsideDown) ||

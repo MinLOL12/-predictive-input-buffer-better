@@ -18,6 +18,7 @@
 //    dead flipGravity hook priority, optional console, in-game console (stage + live log, hidden by default).
 
 #include "prediction_policy.hpp"
+#include "menu_shortcut.hpp"
 #include <Geode/Geode.hpp>
 #include <Geode/modify/CCKeyboardDispatcher.hpp>
 #include <Geode/modify/EffectGameObject.hpp>
@@ -275,6 +276,8 @@ namespace {
         bool fullState = true;       // v2.11.1: copy the full v2.8 player state into the ghost
         int orbWindow = 16;          // v2.6: how far ahead (ticks) an orb may be for that
         int simTick = 0;             // v2.6: tick of the current run
+        GameObject* firstOrb = nullptr; // first orb encountered by this ghost run
+        GameObject* usedOrb = nullptr;  // first orb actually activated by this ghost run
         int firstOrbTick = -1;       // v2.6: first tick the current run touched an orb
         int orbUsedTick = -1;        // v2.6: first tick the current run actually used an orb
         int lastOrbTick = -1;        // v2.82: last tick the current run was still inside an orb
@@ -505,7 +508,7 @@ namespace {
         buf.robotAutoRelease = mod->getSettingValue<bool>("robot-auto-release");
         buf.autoNormalRuns = mod->getSettingValue<bool>("auto-release-normal-runs");
         buf.waveV46 = mod->getSettingValue<bool>("wave-v46");
-        buf.waveMargin = mod->getSettingValue<bool>("wave-safety-margin");
+        buf.waveMargin = mod->getSettingValue<bool>("wave-safety-margin") && !buf.lowLatency;
         buf.orbWindow = static_cast<int>(mod->getSettingValue<int64_t>("orb-align-ticks"));
         // v2.71 performance mode: for PCs that drop frames on clicks. Shorter searches, no
         // extra robustness runs, orbs clicked only the normal way (no late-click retries), and
@@ -1416,6 +1419,8 @@ namespace {
         buf.ghostDied = false;
         buf.ghostHitPortal = false;
         buf.firstOrbTick = -1;
+        buf.firstOrb = nullptr;
+        buf.usedOrb = nullptr;
         buf.orbUsedTick = -1;
         buf.lastOrbTick = -1;
         buf.runYRange = 0.f;
@@ -1816,26 +1821,16 @@ namespace {
     // v2.6 orb alignment: a press made a little before reaching an orb would be wasted
     // (or jump off the ground instead). Find the delay that lands the press inside the
     // orb, like the cube buffer does for jumps. Returns that delay, or 0.
-    // v2.83: fullOnly is used for cube (and v2.84 robot) presses - an orb path
-    // that merely lives a little longer must not take the click before the normal
-    // jump search has had its chance to find a delay that actually lands safely.
+    // Prefer a fully safe timing. For an early airborne press, fall back to an
+    // activation of that same orb even if the predicted path later crashes.
     int alignOrb(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int horizon, int releaseAfter, int learned, int* landed,
-        bool fullOnly = false) {
+        bool fullOnly, bool preferOrb, bool& originalOrbUsed) {
+        originalOrbUsed = false;
         int window = st(std::clamp(buf.orbWindow, 1, MAX_TICKS));
         int found = 0;
         SimEnd end;
         buf.orbClick = false;  // the press being tested is the orb click
         buf.orbWasTiming = false;
-
-        // v2.26: the orb timing that worked at this spot on earlier runs is tried first.
-        if (learned > 0 && learned <= window) {
-            int ret = simulate(layer, p1, p2, dual, learned, true, horizon, releaseAfter, horizon, &end);
-            if (buf.orbUsedTick >= 0 && ret >= horizon) {
-                *landed = ret;
-                buf.orbClick = buf.assumeOrbs;
-                return learned;
-            }
-        }
 
         // 1. Cheap probe: without pressing, does the ghost reach an orb soon?
         buf.skipPress = true;
@@ -1843,6 +1838,7 @@ namespace {
         buf.skipPress = false;
         int touch = buf.firstOrbTick;
         int lastTouch = buf.lastOrbTick;
+        GameObject* targetOrb = buf.firstOrb;
         // v2.82: candidate presses span the whole pass through the orb (the no-press
         // probe saw exactly how long you're inside it), not just the first 6 ticks
         // (1.5f). A frame-perfect orb usually has to be clicked deep inside it.
@@ -1850,9 +1846,8 @@ namespace {
         // v2.83: the old +6t scans always finish again. v2.82 put the budget cut at
         // the top of the whole-orb loop, so at high FPS it could stop before even
         // the old range ran. Past these limits the scan is opportunistic, and a
-        // deep candidate must be fully safe (below) before it can take this click
-        // away from the normal cube jump search.
-        int legacyTimingEnd = std::min(window, st(6));
+        // deep candidate is otherwise opportunistic; airborne orb intent may use
+        // a non-safe activation as a fallback.
         int legacyAlignEnd = std::min(scanEnd, touch + st(6));
         std::string trace;  // v2.42: what was tried, for the explain log
 
@@ -1860,71 +1855,46 @@ namespace {
             // 2. Pressing now already uses an orb (e.g. held into it).
             int now = simulate(layer, p1, p2, dual, 0, true, horizon, releaseAfter, horizon, &end);
             bool nowUses = buf.orbUsedTick >= 0;
-            if (nowUses && now < horizon && buf.orbTiming) {
-                // v2.26: ...but crashes. Where in the orb you click changes where it sends
-                // you, so every tick inside the orb is tried. v2.82: the whole pass, not
-                // just +6t - and when several ticks fully survive, the middle of the
-                // longest safe run wins (margin on both sides) instead of the first,
-                // edge-of-the-window tick. No fully-safe tick: longest-lived, as before.
-                int bestRet = -1;
-                int runStart = -1, safeStart = -1, safeEnd = -1;
-                for (int k = 1; k <= scanEnd; ++k) {
-                    if (k > legacyTimingEnd && clickMs() > buf.budgetMs) {
-                        break;
-                    }
-                    int ret = simulate(layer, p1, p2, dual, k, true, horizon, releaseAfter, horizon, &end);
-                    bool uses = buf.orbUsedTick >= 0;
-                    if (buf.explain) {
-                        trace += fmt::format(" +{}:{}{}", k, ret, uses ? "o" : "-");
-                    }
-                    if (end == SimEnd::StopSearch) {
-                        break;
-                    }
-                    if (uses && ret >= horizon) {
-                        if (runStart < 0) {
-                            runStart = k;
-                        }
-                        if (k - runStart >= safeEnd - safeStart) {
-                            safeStart = runStart;
-                            safeEnd = k;
-                        }
-                    }
-                    else {
-                        runStart = -1;
-                    }
-                    if (!uses || ret < std::min(horizon, now + st(12)) || ret <= bestRet ||
-                        ((fullOnly || k > legacyTimingEnd) && ret < horizon)) {
-                        continue;
-                    }
-                    bestRet = ret;
-                    found = k;
+            // If the player's actual timing already activates an orb, never change
+            // that decision just because a prediction dislikes the resulting path.
+            if (nowUses) {
+                originalOrbUsed = true;
+                buf.orbClick = buf.assumeOrbs;
+                return 0;
+            }
+            // Learned timings are valid only for the specific first orb ahead.
+            if (targetOrb && learned > 0 && learned <= window) {
+                int ret = simulate(layer, p1, p2, dual, learned, true, horizon, releaseAfter, horizon, &end);
+                if (prediction_policy::sameOrb(targetOrb, buf.usedOrb) && ret >= horizon) {
                     *landed = ret;
-                    buf.orbWasTiming = true;
-                }
-                if (safeStart >= 0) {
-                    found = (safeStart + safeEnd) / 2;
-                    *landed = horizon;
-                    buf.orbWasTiming = true;
+                    buf.orbClick = buf.assumeOrbs;
+                    return learned;
                 }
             }
-            else if (!nowUses) {
+            {
                 // 3. Every delay while you're inside the orb whose press really uses it and
                 //    doesn't crash sooner than missing it would. v2.16: the one that lives
                 //    longest wins (earliest on a tie), instead of simply the first that hits
                 //    the orb: where in the orb you click changes where the orb sends you.
                 int bestRet = -1;
+                int fallbackK = 0, fallbackRet = -1;
                 int runStart = -1, safeStart = -1, safeEnd = -1;
                 for (int k = std::max(1, touch - 1); k <= scanEnd; ++k) {
                     if (k > legacyAlignEnd && clickMs() > buf.budgetMs) {
                         break;
                     }
                     int ret = simulate(layer, p1, p2, dual, k, true, horizon, releaseAfter, horizon, &end);
-                    bool uses = buf.orbUsedTick >= 0;
+                    bool uses = prediction_policy::sameOrb(targetOrb, buf.usedOrb);
                     if (buf.explain) {
                         trace += fmt::format(" +{}:{}{}", k, ret, uses ? "o" : "-");
                     }
                     if (end == SimEnd::StopSearch) {
                         break;
+                    }
+                    // Even if no path is predicted safe, preserve the requested first orb.
+                    if (prediction_policy::betterOrbFallback(preferOrb, uses, ret, fallbackRet)) {
+                        fallbackK = k;
+                        fallbackRet = ret;
                     }
                     // v2.82: track the longest fully-safe tick run, centre picked below
                     if (uses && ret >= horizon) {
@@ -1952,9 +1922,12 @@ namespace {
                     found = (safeStart + safeEnd) / 2;
                     *landed = horizon;
                 }
+                else if (found == 0 && fallbackK > 0) {
+                    found = fallbackK;
+                    *landed = fallbackRet;
+                }
             }
-            // v2.42 explain: "+k:ret o" = press k ticks later lives ret ticks and used the orb
-            // ("-" = missed it); a pick needs to use the orb and live at least as long as now.
+            // "+k:ret o" means the press uses the intended orb and lives ret ticks.
             if (buf.explain) {
                 say("orb: touch at t{}, press now {} -> {}t |{} => {}", touch, nowUses ? "uses it" : "misses it", now,
                     trace.empty() ? " (nothing to try)" : trace, found > 0 ? fmt::format("+{}t", found) : std::string("no pick"));
@@ -3033,6 +3006,19 @@ namespace {
             buf.releaseShift = 0;
         }
 
+        // A real press while touching an orb belongs to the player, even if the
+        // prediction thinks the resulting trajectory is unsafe. Do not retime it
+        // to a different orb. Pending input sequences must stay ordered, however.
+        bool touchingOrb = (p1->m_touchingRings && p1->m_touchingRings->count() > 0) ||
+            (p2 && p2->m_touchingRings && p2->m_touchingRings->count() > 0);
+        if (prediction_policy::passOrbPress(down, touchingOrb, buf.queue.empty())) {
+            buf.appliedInput = true;
+            if (buf.explain) {
+                say("pass press: touching an orb (player's timing)");
+            }
+            return false;
+        }
+
         bool p1Wave = p1->m_isDart;
         bool anyWave = p1Wave || (p2 && p2->m_isDart);
         bool mini = (p1Wave && p1->m_vehicleSize < 1.f) || (p2 && p2->m_isDart && p2->m_vehicleSize < 1.f);
@@ -3210,9 +3196,16 @@ namespace {
             bool cubeOnly = isCubeMode(p1) && (!p2 || isCubeMode(p2));
             bool fullOnlyAlign = cubeOnly || anyRobot;  // v2.84: robot gets cube's full-safe orb rule
             int orbLanded = 0;
-            int k = memorySaysSkip(sliceOf(p1))
+            bool originalOrbUsed = false;
+            // Previously failed saves should not permanently block an airborne orb
+            // press: the player may still want that orb despite a predicted death.
+            int k = memorySaysSkip(sliceOf(p1)) && grounded
                 ? 0
-                : alignOrb(layer, p1, p2, dual, horizon, releaseAfter, memoryDelay(sliceOf(p1)), &orbLanded, fullOnlyAlign);
+                : alignOrb(layer, p1, p2, dual, horizon, releaseAfter, memoryDelay(sliceOf(p1)), &orbLanded, fullOnlyAlign, !grounded, originalOrbUsed);
+            if (originalOrbUsed) {
+                buf.appliedInput = down;
+                return false;
+            }
             if (k > 0 && trainInstead(layer, k, down, "orb")) {
                 decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
                 buf.appliedInput = down;
@@ -3220,7 +3213,9 @@ namespace {
             }
             if (k > 0) {
                 say("ORB {} +{}t ({:g}f) -> {}t", buf.orbWasTiming ? "timing" : "press", k, k * TICK, orbLanded);
-                noteSave(layer, k);
+                if (orbLanded >= horizon) {
+                    noteSave(layer, k);
+                }
                 decided(layer, p1, p2, dual, k, down, horizon, releaseAfter);
                 buf.shift = k;
                 queueInput(k - early, down);
@@ -3802,11 +3797,22 @@ private:
     void onPreset(CCObject* sender) {
         auto* mod = Mod::get();
         int which = sender->getTag();
-        int stage = which == 0 ? 2 : which == 1 ? 3 : 5;  // 2f / 4f / 8f
+        int stage = which == 0 ? 2 : which == 1 ? 3 : 6;  // 2f / 4f / 16f
         mod->setSettingValue<bool>("robust-saves", true);
         mod->setSettingValue<bool>("wave-safety-margin", which != 2);
         mod->setSettingValue<bool>("more-time-death-spots", which != 0);
         mod->setSettingValue<bool>("low-latency", false);
+        if (which == 2) {
+            mod->setSettingValue<bool>("ship-buffer", true);
+            mod->setSettingValue<bool>("performance-mode", false);
+            mod->setSettingValue<bool>("training-mode", false);
+            mod->setSettingValue<bool>("smart-prediction", true);
+            mod->setSettingValue<bool>("orb-align", true);
+            mod->setSettingValue<bool>("wave-v46", false);
+            mod->setSettingValue<int64_t>("wave-spam-gap", 6);
+            mod->setSettingValue<double>("sim-budget-ms", std::max(30.0, mod->getSettingValue<double>("sim-budget-ms")));
+            mod->setSettingValue<bool>("auto-budget", false);
+        }
         buf.stage = stage;
         mod->setSavedValue("stage", buf.stage);
         resetPending();
@@ -4005,11 +4011,11 @@ $on_mod(Loaded) {
     recoverGlobals();
     // v2.78: the 16f / 32f / UNLIMITED stages moved CUSTOM (6 -> 8) and OFF (7 -> 10)
     if (!Mod::get()->getSavedValue<bool>("stage-v278", false)) {
-        int64_t oldStage = Mod::get()->getSavedValue<int64_t>("stage", 0);
+        int64_t oldStage = Mod::get()->getSavedValue<int64_t>("stage", 3);
         Mod::get()->setSavedValue("stage", oldStage == 6 ? 8 : oldStage == 7 ? 10 : oldStage);
         Mod::get()->setSavedValue("stage-v278", true);
     }
-    buf.stage = std::clamp(static_cast<int>(Mod::get()->getSavedValue<int64_t>("stage", 0)), 0, STAGE_COUNT - 1);
+    buf.stage = std::clamp(static_cast<int>(Mod::get()->getSavedValue<int64_t>("stage", 3)), 0, STAGE_COUNT - 1);
     // v2.62: per-level settings off (switched off once): every level uses the same switches, like v2.43.1
     if (!Mod::get()->getSavedValue<bool>("per-level-v262", false)) {
         Mod::get()->setSettingValue<bool>("per-level-settings", false);
@@ -4490,6 +4496,7 @@ class $modify(BufPlayerObject, PlayerObject) {
                 buf.orbsUsed.insert(ring);
                 if (buf.orbUsedTick < 0) {
                     buf.orbUsedTick = buf.simTick;
+                    buf.usedOrb = ring;
                 }
             }
             return;
@@ -4503,6 +4510,7 @@ class $modify(BufPlayerObject, PlayerObject) {
             buf.orbsUsed.insert(ring);
             if (buf.orbUsedTick < 0) {
                 buf.orbUsedTick = buf.simTick;
+                buf.usedOrb = ring;
             }
         }
         PlayerObject::startDashing(ring);
@@ -4512,19 +4520,21 @@ class $modify(BufPlayerObject, PlayerObject) {
 // Shortcuts use the game's keyboard events, so they only fire while GD has focus.
 class $modify(BufKeyboard, CCKeyboardDispatcher) {
     bool dispatchKeyboardMSG(enumKeyCodes key, bool isKeyDown, bool isKeyRepeat, double timestamp) {
-        if (isKeyDown && !isKeyRepeat && GameManager::get()->m_playLayer) {
+        auto* layer = GameManager::get()->m_playLayer;
+        // Geode dispatches queued raw-input events; GetKeyState can reflect a different
+        // Windows message (or a later physical state). The dispatcher has the modifier
+        // snapshot for this exact event, including either Alt key.
+        if (menu_shortcut::shouldOpen(key == KEY_F10, isKeyDown, isKeyRepeat, getAltKeyPressed(), layer != nullptr)) {
+            if (!layer->m_isPaused) {
+                layer->pauseGame(true);
+            }
+            BufferMenu::open();
+            return true;
+        }
+        if (isKeyDown && !isKeyRepeat && layer) {
             int k = static_cast<int>(key);
             auto is = [&](int i) { return buf.keys[i] != 0 && k == buf.keys[i]; };
-            // Check the chord before the configurable keys: F10 alone still toggles path view.
-            if (k == KEY_F10 && (GetKeyState(VK_MENU) & 0x8000)) {
-                auto* layer = GameManager::get()->m_playLayer;
-                if (!layer->m_isPaused) {
-                    layer->pauseGame(true);
-                }
-                BufferMenu::open();
-                return true;
-            }
-            else if (is(0)) {
+            if (is(0)) {
                 cycleStage();
             }
             else if (is(2)) {
@@ -4718,6 +4728,7 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
             buf.touchedOrb = true;
             if (buf.firstOrbTick < 0) {
                 buf.firstOrbTick = buf.simTick;
+                buf.firstOrb = ring;
             }
         }
         GJBaseGameLayer::playerTouchedRing(player, ring);

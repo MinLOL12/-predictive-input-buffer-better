@@ -8,6 +8,19 @@ struct Player {
 
 int main() {
     using namespace prediction_policy;
+    assert(passOrbPress(true, true, true));
+    assert(!passOrbPress(false, true, true));
+    assert(!passOrbPress(true, false, true));
+    assert(!passOrbPress(true, true, false)); // keep pending inputs ordered
+    int orb1 = 1, orb2 = 2;
+    assert(sameOrb(&orb1, &orb1));
+    assert(!sameOrb(&orb1, &orb2));
+    assert(!sameOrb(static_cast<int*>(nullptr), static_cast<int*>(nullptr)));
+    assert(betterOrbFallback(true, true, 5, -1)); // unsafe can still activate the intended orb
+    assert(!betterOrbFallback(true, false, 100, -1)); // never switch targets
+    assert(!betterOrbFallback(false, true, 5, -1));
+    assert(!betterOrbFallback(true, true, 5, 5));
+
     Player uprightWave{true, false};
     Player invertedWavePlayer{true, true};
     Player invertedCube{false, true};
