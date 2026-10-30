@@ -1,9 +1,11 @@
 # Click Before Frames (Geode)
 
 ## Keys
-F6 cycle stage | F7 menu | F8 copy the console log | F9 open/close the in-game console | F10 path view | F11 forget this level's memory
+F6 cycle stage | Alt+F10 menu | F8 copy the console log | F9 open/close the in-game console | F10 path view | F11 forget this level's memory
 
-Practice use only; do not use for verified or leaderboard runs.
+The buffer menu opens with Alt+F10 while in a level; there is no pause-menu button. The other keys can be rebound in mod settings.
+
+Practice use only; do not use for verified or leaderboard runs. Auto-input features can act without an on-screen watermark.
 
 ## v2.4 options (mod settings)
 - Wave auto-release (practice only, off by default): lets go for you when holding would crash within the window and letting go survives.
@@ -33,7 +35,7 @@ Practice use only; do not use for verified or leaderboard runs.
 - v2.40 UFO: crashes you could have flapped away from count as safe, landing counts as safe, smallest delay wins, spam guard for fast flapping.
 - v2.41 FPS: moving-object tracking drops far objects and keeps a short moving-now list (was checking up to 4096 objects every step and every prediction).
 - v2.43: more time at death spots - where you keep dying, react-only-safe inputs get the delay that pushes the crash furthest away.
-- v2.44: in-game menu (pause menu 'Buffer' button or F7): stage, main switches, status, all settings / copy log / forget level. Ship: own spam gap (feathering is buffered), max delay 4, on by default.
+- v2.44: in-game menu (originally opened via the pause-menu button or F7; now Alt+F10): stage, main switches, status, all settings / copy log / forget level. Ship: own spam gap (feathering is buffered), max delay 4, on by default.
 - v2.45 ball: short flips count as landings, landings must last 8 ticks, spam guard for fast flipping; menu switch.
 - v2.46 watermark (always on, not configurable): 'Basu Input Buffer | stage' in the level while the buffer is on, and 'Basu Input Buffer was on' on the level complete screen if it was on during the attempt.
 - v2.49: ghost no longer touches collision blocks (could break collision triggers); spam guard sends waiting inputs instead of dropping them (lost clicks broke click/event triggers).

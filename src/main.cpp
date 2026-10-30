@@ -25,7 +25,6 @@
 #include <Geode/modify/HardStreak.hpp>
 #include <Geode/modify/LevelEditorLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
-#include <Geode/modify/PauseLayer.hpp>
 #include <Geode/modify/EndLevelLayer.hpp>
 #include <Geode/ui/GeodeUI.hpp>
 #include <Geode/ui/Popup.hpp>
@@ -162,7 +161,7 @@ namespace {
         bool perfMode = false;   // v2.71: performance mode
         double userBudget = 6.0; // v2.75: the budget from the settings (budgetMs is this click's)
         bool autoBudget = true;  // v2.75: budget follows the frame rate
-        int keys[6] = { 0, 0, 0, 0, 0, 0 };  // v2.75: stage, menu, export, console, path, forget
+        int keys[5] = { 0, 0, 0, 0, 0 };  // stage, export, console, path, forget
         std::unordered_set<GameObject*> simDisabled;  // v2.75: objects a toggle orb switched off in this prediction
         std::deque<std::string> logLines;
 
@@ -270,7 +269,6 @@ namespace {
         bool robotSmart = true;      // v2.12: alternate reachable hold lengths can make a robot press safe
         bool robotAutoRelease = false;  // v2.12: robot auto-release (practice mode only)
         bool autoNormalRuns = false; // v2.14: let auto-release work outside practice too
-        CCLabelBMFont* autoTag = nullptr;  // v2.14: on-screen "AUTO-RELEASE ON" tag
         bool usedThisAttempt = false;      // the buffer was on at some point of this attempt (end-screen stats)
         bool learn = true;           // v2.13: per-level memory learned from your runs
         bool fullState = true;       // v2.11.1: copy the full v2.8 player state into the ghost
@@ -452,8 +450,8 @@ namespace {
         buf.budgetMs = mod->getSettingValue<double>("sim-budget-ms");
         buf.autoBudget = mod->getSettingValue<bool>("auto-budget");
         // v2.75 rebindable keys
-        char const* keyNames[] = { "key-stage", "key-menu", "key-export", "key-console", "key-path", "key-forget" };
-        for (int i = 0; i < 6; ++i) {
+        char const* keyNames[] = { "key-stage", "key-export", "key-console", "key-path", "key-forget" };
+        for (int i = 0; i < 5; ++i) {
             buf.keys[i] = parseKey(mod->getSettingValue<std::string>(keyNames[i]));
         }
         buf.practiceOnly = mod->getSettingValue<bool>("practice-only");
@@ -562,17 +560,6 @@ namespace {
         }
     }
 
-    // v2.14: a run outside practice where auto-release can press for you is marked on screen.
-    void refreshAutoTag() {
-        if (!buf.autoTag) {
-            return;
-        }
-        auto* layer = GameManager::get()->m_playLayer;
-        bool on = buf.enabled && buf.autoNormalRuns && (buf.autoRelease || buf.robotAutoRelease || buf.dashAutoRelease) && layer &&
-            !layer->m_isPracticeMode;
-        buf.autoTag->setVisible(on);
-    }
-
     size_t memorySpots();
 
     // v2.29 F8: copy the console to the clipboard (and save it to console-export.txt in the
@@ -649,7 +636,6 @@ namespace {
         buf.panelTitle = nullptr;
         buf.panelLines.clear();
         buf.pathNode = nullptr;
-        buf.autoTag = nullptr;
         buf.simulating = false;
         buf.injecting = false;
         buf.rapid = 0;
@@ -3534,7 +3520,6 @@ namespace {
         readSettings();
         saveProfile();
         say("F6 -> {}", stageText());
-        refreshAutoTag();
         refreshPanel();
     }
 
@@ -3648,7 +3633,7 @@ namespace {
     }
 }
 
-// v2.44 in-game menu: pause menu button or F7 in a level. Stage, the main switches,
+// In-game menu: Alt+F10 in a level. Stage, the main switches,
 // status, and shortcuts to all settings / copy log / forget level.
 class BufferMenu : public geode::Popup {
     struct Option {
@@ -3995,24 +3980,6 @@ class $modify(BufEndLevelLayer, EndLevelLayer) {
     }
 };
 
-class $modify(BufPauseLayer, PauseLayer) {
-    void customSetup() {
-        PauseLayer::customSetup();
-        auto* sprite = ButtonSprite::create("Buffer", "bigFont.fnt", BufferMenu::currentTheme().button, 0.8f);
-        sprite->setScale(0.6f);
-        auto* button = CCMenuItemSpriteExtra::create(sprite, this, menu_selector(BufPauseLayer::onBufferMenu));
-        auto* menu = CCMenu::create();
-        menu->addChild(button);
-        auto win = CCDirector::get()->getWinSize();
-        menu->setPosition({ win.width - 50.f, 30.f });
-        this->addChild(menu, 10);
-    }
-
-    void onBufferMenu(CCObject*) {
-        BufferMenu::open();
-    }
-};
-
 $on_mod(Loaded) {
     buf.console = Mod::get()->getSettingValue<bool>("debug-console");
     buf.showPath = Mod::get()->getSettingValue<bool>("show-path");
@@ -4204,7 +4171,7 @@ class $modify(BufPlayLayer, PlayLayer) {
             buf.panelLines.push_back(line);
         }
 
-        auto* hint = CCLabelBMFont::create("F6 stage  F7 menu  F8 copy log  F9 console  F10 path  F11 forget", "chatFont.fnt");
+        auto* hint = CCLabelBMFont::create("F6 stage  Alt+F10 menu  F8 copy log  F9 console  F10 path  F11 forget", "chatFont.fnt");
         hint->setScale(0.45f);
         hint->setColor({ 160, 190, 255 });
         hint->setAnchorPoint({ 0.5f, 0.5f });
@@ -4215,16 +4182,6 @@ class $modify(BufPlayLayer, PlayLayer) {
         refreshPanel();
 
         buf.usedThisAttempt = false;
-
-        buf.autoTag = CCLabelBMFont::create("AUTO INPUTS ON", "bigFont.fnt");
-        buf.autoTag->setScale(0.24f);
-        buf.autoTag->setColor({ 255, 120, 120 });
-        buf.autoTag->setOpacity(153);  // 60%, like the console; still readable in a recording
-        buf.autoTag->setAnchorPoint({ 1.f, 0.f });
-        buf.autoTag->setPosition({ win.width - 6.f, 4.f });
-        buf.autoTag->setZOrder(1000);
-        this->addChild(buf.autoTag);
-        refreshAutoTag();
 
         buf.hintLabel = CCLabelBMFont::create("", "bigFont.fnt");
         buf.hintLabel->setColor({ 255, 170, 215 });
@@ -4280,18 +4237,12 @@ class $modify(BufPlayLayer, PlayLayer) {
         buf.shipStraight = false;
         resetPending();
         forgetPress();
-        refreshAutoTag();
         if (buf.pathNode) {
             buf.pathNode->clear();
         }
         buf.autoReleased = false;
         drift.active = false;
         PlayLayer::resetLevel();
-    }
-
-    void togglePracticeMode(bool practiceMode) {
-        PlayLayer::togglePracticeMode(practiceMode);
-        refreshAutoTag();
     }
 
     void playEndAnimationToPos(CCPoint position) {
@@ -4539,39 +4490,39 @@ class $modify(BufPlayerObject, PlayerObject) {
     }
 };
 
-// F6 via the game's own keyboard events: no polling, and it only fires while GD has
-// focus (v1 polled GetAsyncKeyState every physics tick, even when tabbed out).
+// Shortcuts use the game's keyboard events, so they only fire while GD has focus.
 class $modify(BufKeyboard, CCKeyboardDispatcher) {
     bool dispatchKeyboardMSG(enumKeyCodes key, bool isKeyDown, bool isKeyRepeat, double timestamp) {
         if (isKeyDown && !isKeyRepeat && GameManager::get()->m_playLayer) {
-            // v2.75: rebindable in the settings
             int k = static_cast<int>(key);
             auto is = [&](int i) { return buf.keys[i] != 0 && k == buf.keys[i]; };
-            if (is(0)) {
-                cycleStage();
-            }
-            else if (is(1)) {
+            // Check the chord before the configurable keys: F10 alone still toggles path view.
+            if (k == KEY_F10 && (GetKeyState(VK_MENU) & 0x8000)) {
                 auto* layer = GameManager::get()->m_playLayer;
-                if (layer && !layer->m_isPaused) {
+                if (!layer->m_isPaused) {
                     layer->pauseGame(true);
                 }
                 BufferMenu::open();
+                return true;
             }
-            else if (is(3)) {
+            else if (is(0)) {
+                cycleStage();
+            }
+            else if (is(2)) {
                 buf.panelOpen = !buf.panelOpen;
                 refreshPanel();
             }
-            else if (is(2)) {
+            else if (is(1)) {
                 exportConsole();
             }
-            else if (is(5)) {
+            else if (is(4)) {
                 memory.clear();
                 pending.active = false;
                 memoryDirty = true;
                 saveMemory();
                 say("memory for this level cleared");
             }
-            else if (is(4)) {
+            else if (is(3)) {
                 buf.showPath = !buf.showPath;
                 if (buf.pathNode) {
                     buf.pathNode->clear();

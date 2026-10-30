@@ -178,7 +178,7 @@
 		"auto-release-normal-runs": {
 			"type": "bool",
 			"name": "Auto-release in normal runs",
-			"description": "Let auto-release (wave / robot / dash) also work outside practice mode. While it can act, an 'AUTO INPUTS ON' tag is shown on screen. Never use it for verified or leaderboard runs.",
+			"description": "Let auto-release (wave / robot / dash) also work outside practice mode. Never use it for verified or leaderboard runs.",
 			"default": false
 		},
 		"spider-smart": {
@@ -346,12 +346,6 @@
 			"name": "Key: change stage",
 			"description": "F1-F12, a letter (A-Z) or a number (0-9). Empty or None = no key.",
 			"default": "F6"
-		},
-		"key-menu": {
-			"type": "string",
-			"name": "Key: open menu",
-			"description": "F1-F12, a letter (A-Z) or a number (0-9). Empty or None = no key.",
-			"default": "F7"
 		},
 		"key-export": {
 			"type": "string",
