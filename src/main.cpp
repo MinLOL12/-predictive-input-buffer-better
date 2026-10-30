@@ -10,13 +10,14 @@
 //    number of ticks) and an UNLIMITED stage. v2.78: one max delay for every gamemode
 //    (cube, wave, ship, ball, UFO, robot, spider, swing) - no per-mode caps anymore.
 //  - Smart prediction: ghost uses orbs, pads, gravity portals and speed portals; mode /
-//    size / dual / mirror / teleport portals end the prediction as "safe".
+//    dual / teleport portals end the prediction as "safe"; mirror is visual only.
 //  - Input queue: every input arriving during a delay is shifted by the same amount,
 //    so taps and hold lengths are preserved (no more swallowed clicks / 1-tick taps).
 //  - Time budget per click so big windows don't hitch.
 //  - Fixes: ghost lifetime, init using `this`, time-warp dt, F6 only when GD focused,
 //    dead flipGravity hook priority, optional console, in-game console (stage + live log, hidden by default).
 
+#include "prediction_policy.hpp"
 #include <Geode/Geode.hpp>
 #include <Geode/modify/CCKeyboardDispatcher.hpp>
 #include <Geode/modify/EffectGameObject.hpp>
@@ -25,7 +26,6 @@
 #include <Geode/modify/HardStreak.hpp>
 #include <Geode/modify/LevelEditorLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
-#include <Geode/modify/PauseLayer.hpp>
 #include <Geode/modify/EndLevelLayer.hpp>
 #include <Geode/ui/GeodeUI.hpp>
 #include <Geode/ui/Popup.hpp>
@@ -162,7 +162,7 @@ namespace {
         bool perfMode = false;   // v2.71: performance mode
         double userBudget = 6.0; // v2.75: the budget from the settings (budgetMs is this click's)
         bool autoBudget = true;  // v2.75: budget follows the frame rate
-        int keys[6] = { 0, 0, 0, 0, 0, 0 };  // v2.75: stage, menu, export, console, path, forget
+        int keys[5] = { 0, 0, 0, 0, 0 };  // stage, export, console, path, forget
         std::unordered_set<GameObject*> simDisabled;  // v2.75: objects a toggle orb switched off in this prediction
         std::deque<std::string> logLines;
 
@@ -270,7 +270,6 @@ namespace {
         bool robotSmart = true;      // v2.12: alternate reachable hold lengths can make a robot press safe
         bool robotAutoRelease = false;  // v2.12: robot auto-release (practice mode only)
         bool autoNormalRuns = false; // v2.14: let auto-release work outside practice too
-        CCLabelBMFont* autoTag = nullptr;  // v2.14: on-screen "AUTO-RELEASE ON" tag
         bool usedThisAttempt = false;      // the buffer was on at some point of this attempt (end-screen stats)
         bool learn = true;           // v2.13: per-level memory learned from your runs
         bool fullState = true;       // v2.11.1: copy the full v2.8 player state into the ghost
@@ -452,8 +451,8 @@ namespace {
         buf.budgetMs = mod->getSettingValue<double>("sim-budget-ms");
         buf.autoBudget = mod->getSettingValue<bool>("auto-budget");
         // v2.75 rebindable keys
-        char const* keyNames[] = { "key-stage", "key-menu", "key-export", "key-console", "key-path", "key-forget" };
-        for (int i = 0; i < 6; ++i) {
+        char const* keyNames[] = { "key-stage", "key-export", "key-console", "key-path", "key-forget" };
+        for (int i = 0; i < 5; ++i) {
             buf.keys[i] = parseKey(mod->getSettingValue<std::string>(keyNames[i]));
         }
         buf.practiceOnly = mod->getSettingValue<bool>("practice-only");
@@ -562,17 +561,6 @@ namespace {
         }
     }
 
-    // v2.14: a run outside practice where auto-release can press for you is marked on screen.
-    void refreshAutoTag() {
-        if (!buf.autoTag) {
-            return;
-        }
-        auto* layer = GameManager::get()->m_playLayer;
-        bool on = buf.enabled && buf.autoNormalRuns && (buf.autoRelease || buf.robotAutoRelease || buf.dashAutoRelease) && layer &&
-            !layer->m_isPracticeMode;
-        buf.autoTag->setVisible(on);
-    }
-
     size_t memorySpots();
 
     // v2.29 F8: copy the console to the clipboard (and save it to console-export.txt in the
@@ -649,7 +637,6 @@ namespace {
         buf.panelTitle = nullptr;
         buf.panelLines.clear();
         buf.pathNode = nullptr;
-        buf.autoTag = nullptr;
         buf.simulating = false;
         buf.injecting = false;
         buf.rapid = 0;
@@ -716,12 +703,34 @@ namespace {
         ghost->setVisible(false);
         ghost->resetTouchedRings(true);
         ghost->copyAttributes(real);
-        ghost->setScale(real->getScale());
+        // Preserve both axes: a mirrored or inverted sprite need not have uniform scale.
+        ghost->setScaleX(real->getScaleX());
+        ghost->setScaleY(real->getScaleY());
         ghost->setContentSize(real->getContentSize());
         ghost->m_width = real->m_width;
         ghost->m_height = real->m_height;
+        // These are essential physics state, even when the optional full-state copy is off.
+        // Ghosts are reused, so never let a previous normal/inverted run leak into this one.
+        ghost->setPosition(real->getPosition());
+        ghost->m_position = real->m_position;
         ghost->m_gravityMod = real->m_gravityMod;
+        ghost->m_gravity = real->m_gravity;
+        ghost->m_yStart = real->m_yStart;
+        ghost->m_fixGravityBug = real->m_fixGravityBug;
+        ghost->m_yVelocity = real->m_yVelocity;
+        ghost->m_fallSpeed = real->m_fallSpeed;
+        ghost->m_stateFlipGravity = real->m_stateFlipGravity;
+        ghost->m_isGoingLeft = real->m_isGoingLeft;
+        ghost->m_isSideways = real->m_isSideways;
+        ghost->m_lastPortalPos = real->m_lastPortalPos;
         ghost->m_isOnGround = real->m_isOnGround;
+        ghost->m_isShip = real->m_isShip;
+        ghost->m_isBird = real->m_isBird;
+        ghost->m_isBall = real->m_isBall;
+        ghost->m_isDart = real->m_isDart;
+        ghost->m_isRobot = real->m_isRobot;
+        ghost->m_isSpider = real->m_isSpider;
+        ghost->m_isSwing = real->m_isSwing;
         ghost->m_isUpsideDown = real->m_isUpsideDown;
         ghost->m_vehicleSize = real->m_vehicleSize;
         ghost->m_playerSpeed = real->m_playerSpeed;
@@ -758,23 +767,11 @@ namespace {
         // player: cube / ball / ufo / wave / robot / spider / swing, mini, upside down,
         // reverse (going left), sideways, dual. copyAttributes() doesn't carry most of
         // it, the slope state above all (wave and cube riding slopes drifted without it).
-        ghost->m_isShip = real->m_isShip;
-        ghost->m_isBird = real->m_isBird;
-        ghost->m_isBall = real->m_isBall;
-        ghost->m_isDart = real->m_isDart;
-        ghost->m_isRobot = real->m_isRobot;
-        ghost->m_isSpider = real->m_isSpider;
-        ghost->m_isSwing = real->m_isSwing;
-        ghost->m_isGoingLeft = real->m_isGoingLeft;
-        ghost->m_isSideways = real->m_isSideways;
         ghost->m_reverseSync = real->m_reverseSync;
         ghost->m_reverseRelated = real->m_reverseRelated;
         ghost->m_maybeReverseSpeed = real->m_maybeReverseSpeed;
         ghost->m_maybeReverseAcceleration = real->m_maybeReverseAcceleration;
         ghost->m_speedMultiplier = real->m_speedMultiplier;
-        ghost->m_gravity = real->m_gravity;
-        ghost->m_yStart = real->m_yStart;
-        ghost->m_fixGravityBug = real->m_fixGravityBug;
         ghost->m_fixRobotJump = real->m_fixRobotJump;
         ghost->m_enable22Changes = real->m_enable22Changes;
         ghost->m_enableImpulseFix = real->m_enableImpulseFix;
@@ -783,8 +780,6 @@ namespace {
         ghost->m_lastPosition = real->m_lastPosition;  // v2.18: spider / move triggers read it (CBF sets it per tick)
 
         // vertical motion
-        ghost->m_yVelocity = real->m_yVelocity;
-        ghost->m_fallSpeed = real->m_fallSpeed;
         ghost->m_yVelocityBeforeSlope = real->m_yVelocityBeforeSlope;
         ghost->m_yVelocityRelated = real->m_yVelocityRelated;
         ghost->m_yVelocityRelated3 = real->m_yVelocityRelated3;
@@ -859,7 +854,6 @@ namespace {
         ghost->m_stateNoStickX = real->m_stateNoStickX;
         ghost->m_stateNoStickY = real->m_stateNoStickY;
         ghost->m_stateHitHead = real->m_stateHitHead;
-        ghost->m_stateFlipGravity = real->m_stateFlipGravity;
         ghost->m_stateNoAutoJump = real->m_stateNoAutoJump;
         ghost->m_stateScale = real->m_stateScale;
         ghost->m_maybeStateForce2 = real->m_maybeStateForce2;
@@ -1993,12 +1987,17 @@ namespace {
         if (ret >= target || *end == SimEnd::StopSearch) {
             return ret;
         }
+        bool inverted = prediction_policy::invertedWave(p1, p2, dual);
+        // Inverted wave corridors often require another very quick turn. Do not call a
+        // crash safe merely because an unrealistically early hypothetical turn survives.
+        int minimumTurn = prediction_policy::waveMinimumTurn(inverted, st(WAVE_MIN_TURN), st(12));
+        int escape = prediction_policy::waveEscape(inverted, st(WAVE_ESCAPE), st(24));
         for (int margin : WAVE_TURN_MARGINS) {
             int turnAt = ret - st(margin);
-            if (turnAt < st(WAVE_MIN_TURN)) {
+            if (turnAt < minimumTurn) {
                 break;
             }
-            int length = std::min(horizon, turnAt + st(WAVE_ESCAPE));
+            int length = std::min(horizon, turnAt + escape);
             SimEnd turnEnd;
             int turned = simulateOrbs(layer, p1, p2, dual, delay, down, length, turnAt, length, &turnEnd);
             if (turned >= length) {
@@ -2295,7 +2294,7 @@ namespace {
         marginUsed = false;
         using clock = std::chrono::steady_clock;
         auto start = clock::now();
-        int target = std::min(horizon, base + st(12));
+        int target = prediction_policy::waveTarget(prediction_policy::invertedWave(p1, p2, dual), horizon, base, st(12));
         dbgBestK = 0;
         dbgBestRet = -1;
         for (int k = 1; k <= maxDelay; ++k) {
@@ -3059,6 +3058,11 @@ namespace {
         // v2.44: ship is steered by feathering, so it gets its own, much shorter spam gap;
         // otherwise nearly every ship input counted as spam and was never buffered.
         int spamGap = st(anyShip && !anyWave ? std::clamp(buf.shipSpamGap, 2, 40) : std::clamp(buf.spamGap, 4, 40));
+        if (anyWave) {
+            // Keep tight inverted zigzags buffered instead of mistaking them for spam.
+            // Extremely fast inputs still use the existing spam guard.
+            spamGap = prediction_policy::waveSpamGap(spamGap, prediction_policy::invertedWave(p1, p2, dual), st(6));
+        }
         if (buf.sinceInput < spamGap) {
             ++buf.rapid;
         }
@@ -3405,7 +3409,8 @@ namespace {
         // through untouched instead of being moved by up to 10 frames for nothing.
         // v2.75: robot jumps and UFO / swing flaps too (no more half saves there either)
         // v2.81: ship and spider saves must fully clear too, not just live 12 ticks longer
-        int needed = (groundPress || robotPress || ufoPress || robotRelease || dashRelease || spiderPress || shipInput || ballPress) ? horizon : std::min(horizon, base + st(12));
+        int needed = (groundPress || robotPress || ufoPress || robotRelease || dashRelease || spiderPress || shipInput || ballPress)
+            ? horizon : prediction_policy::waveTarget(cubeStyleWave && prediction_policy::invertedWave(p1, p2, dual), horizon, base, st(12));
         int learned = memoryDelay(slice);
         if (learned > 0 && learned <= maxDelay && !(anyWave && buf.waveV46)) {
             int target = needed;
@@ -3534,7 +3539,6 @@ namespace {
         readSettings();
         saveProfile();
         say("F6 -> {}", stageText());
-        refreshAutoTag();
         refreshPanel();
     }
 
@@ -3648,7 +3652,7 @@ namespace {
     }
 }
 
-// v2.44 in-game menu: pause menu button or F7 in a level. Stage, the main switches,
+// In-game menu: Alt+F10 in a level. Stage, the main switches,
 // status, and shortcuts to all settings / copy log / forget level.
 class BufferMenu : public geode::Popup {
     struct Option {
@@ -3995,24 +3999,6 @@ class $modify(BufEndLevelLayer, EndLevelLayer) {
     }
 };
 
-class $modify(BufPauseLayer, PauseLayer) {
-    void customSetup() {
-        PauseLayer::customSetup();
-        auto* sprite = ButtonSprite::create("Buffer", "bigFont.fnt", BufferMenu::currentTheme().button, 0.8f);
-        sprite->setScale(0.6f);
-        auto* button = CCMenuItemSpriteExtra::create(sprite, this, menu_selector(BufPauseLayer::onBufferMenu));
-        auto* menu = CCMenu::create();
-        menu->addChild(button);
-        auto win = CCDirector::get()->getWinSize();
-        menu->setPosition({ win.width - 50.f, 30.f });
-        this->addChild(menu, 10);
-    }
-
-    void onBufferMenu(CCObject*) {
-        BufferMenu::open();
-    }
-};
-
 $on_mod(Loaded) {
     buf.console = Mod::get()->getSettingValue<bool>("debug-console");
     buf.showPath = Mod::get()->getSettingValue<bool>("show-path");
@@ -4204,7 +4190,7 @@ class $modify(BufPlayLayer, PlayLayer) {
             buf.panelLines.push_back(line);
         }
 
-        auto* hint = CCLabelBMFont::create("F6 stage  F7 menu  F8 copy log  F9 console  F10 path  F11 forget", "chatFont.fnt");
+        auto* hint = CCLabelBMFont::create("F6 stage  Alt+F10 menu  F8 copy log  F9 console  F10 path  F11 forget", "chatFont.fnt");
         hint->setScale(0.45f);
         hint->setColor({ 160, 190, 255 });
         hint->setAnchorPoint({ 0.5f, 0.5f });
@@ -4215,16 +4201,6 @@ class $modify(BufPlayLayer, PlayLayer) {
         refreshPanel();
 
         buf.usedThisAttempt = false;
-
-        buf.autoTag = CCLabelBMFont::create("AUTO INPUTS ON", "bigFont.fnt");
-        buf.autoTag->setScale(0.24f);
-        buf.autoTag->setColor({ 255, 120, 120 });
-        buf.autoTag->setOpacity(153);  // 60%, like the console; still readable in a recording
-        buf.autoTag->setAnchorPoint({ 1.f, 0.f });
-        buf.autoTag->setPosition({ win.width - 6.f, 4.f });
-        buf.autoTag->setZOrder(1000);
-        this->addChild(buf.autoTag);
-        refreshAutoTag();
 
         buf.hintLabel = CCLabelBMFont::create("", "bigFont.fnt");
         buf.hintLabel->setColor({ 255, 170, 215 });
@@ -4280,18 +4256,12 @@ class $modify(BufPlayLayer, PlayLayer) {
         buf.shipStraight = false;
         resetPending();
         forgetPress();
-        refreshAutoTag();
         if (buf.pathNode) {
             buf.pathNode->clear();
         }
         buf.autoReleased = false;
         drift.active = false;
         PlayLayer::resetLevel();
-    }
-
-    void togglePracticeMode(bool practiceMode) {
-        PlayLayer::togglePracticeMode(practiceMode);
-        refreshAutoTag();
     }
 
     void playEndAnimationToPos(CCPoint position) {
@@ -4539,39 +4509,39 @@ class $modify(BufPlayerObject, PlayerObject) {
     }
 };
 
-// F6 via the game's own keyboard events: no polling, and it only fires while GD has
-// focus (v1 polled GetAsyncKeyState every physics tick, even when tabbed out).
+// Shortcuts use the game's keyboard events, so they only fire while GD has focus.
 class $modify(BufKeyboard, CCKeyboardDispatcher) {
     bool dispatchKeyboardMSG(enumKeyCodes key, bool isKeyDown, bool isKeyRepeat, double timestamp) {
         if (isKeyDown && !isKeyRepeat && GameManager::get()->m_playLayer) {
-            // v2.75: rebindable in the settings
             int k = static_cast<int>(key);
             auto is = [&](int i) { return buf.keys[i] != 0 && k == buf.keys[i]; };
-            if (is(0)) {
-                cycleStage();
-            }
-            else if (is(1)) {
+            // Check the chord before the configurable keys: F10 alone still toggles path view.
+            if (k == KEY_F10 && (GetKeyState(VK_MENU) & 0x8000)) {
                 auto* layer = GameManager::get()->m_playLayer;
-                if (layer && !layer->m_isPaused) {
+                if (!layer->m_isPaused) {
                     layer->pauseGame(true);
                 }
                 BufferMenu::open();
+                return true;
             }
-            else if (is(3)) {
+            else if (is(0)) {
+                cycleStage();
+            }
+            else if (is(2)) {
                 buf.panelOpen = !buf.panelOpen;
                 refreshPanel();
             }
-            else if (is(2)) {
+            else if (is(1)) {
                 exportConsole();
             }
-            else if (is(5)) {
+            else if (is(4)) {
                 memory.clear();
                 pending.active = false;
                 memoryDirty = true;
                 saveMemory();
                 say("memory for this level cleared");
             }
-            else if (is(4)) {
+            else if (is(3)) {
                 buf.showPath = !buf.showPath;
                 if (buf.pathNode) {
                     buf.pathNode->clear();
@@ -4640,6 +4610,12 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
         for (int i = 0; i < objectCount; ++i) {
             auto* object = list[i];
             if (!object) {
+                continue;
+            }
+            // Mirror portals only change the camera. Keep predicting in world coordinates,
+            // without forwarding them to the real layer or terminating the ghost path.
+            if (object->m_objectType == GameObjectType::InverseMirrorPortal ||
+                object->m_objectType == GameObjectType::NormalMirrorPortal) {
                 continue;
             }
             auto type = static_cast<unsigned>(object->m_objectType);
