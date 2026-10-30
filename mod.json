@@ -108,15 +108,15 @@
 		"wave-spam-gap": {
 			"type": "int",
 			"name": "Wave spam: max gap (ticks)",
-			"description": "Presses/releases closer together than this count as spam. After 3 in a row, wave inputs go straight to the game until you pause. 16 ticks = 4 frames at 60fps (about 7 clicks/sec). Upside-down wave uses at most 6 ticks so tight zigzags stay buffered. Raise it if spam still gets buffered, lower it if tight wave parts stop being buffered.",
-			"default": 16,
+			"description": "Presses/releases closer together than this count as spam. After 3 in a row, wave inputs go straight to the game until you pause. 6 ticks = 1.5 frames at 60fps. Upside-down wave uses at most 6 ticks. Raise it if spam still gets buffered, lower it if tight wave parts stop being buffered.",
+			"default": 6,
 			"min": 4,
 			"max": 40
 		},
 		"orb-align": {
 			"type": "bool",
 			"name": "Orb alignment",
-			"description": "If you press a little before reaching an orb (and the press wouldn't hit it), the press is held back until you're inside the orb so it hits. Works for every mode except ship and wave. Needs 'Orb / pad / portal prediction' on.",
+			"description": "If an airborne press misses the first orb ahead, hold it until that same orb can be activated. Fully safe timings are preferred, but an orb-activating timing can be used even if no safe path is predicted. Presses already touching an orb pass through unchanged. Works for every mode except ship and wave. Needs 'Orb / pad / portal prediction' on.",
 			"default": true
 		},
 		"orb-align-ticks": {
@@ -208,7 +208,7 @@
 		"orb-timing": {
 			"type": "bool",
 			"name": "Orb timing",
-			"description": "For orbs that only work at a specific moment inside them (frame perfects): a press already inside an orb that would crash is re-timed to any tick while you pass through the orb - the middle of the longest fully-safe click window wins - the orb timing that worked at a spot before is tried first, and predictions of later orbs in a chain also try clicking them 3 / 6 ticks into them, plus 10 / 14 / 20 ticks while enough prediction budget remains for the main save search.",
+			"description": "For frame-perfect orbs, retry timings while passing through the same orb and prefer the middle of a fully-safe window. A press already touching an orb is passed through unchanged. Predictions of later orbs in a chain also try later clicks while enough time budget remains.",
 			"default": true
 		},
 		"cube-late-crash": {

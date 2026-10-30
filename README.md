@@ -7,6 +7,11 @@ The buffer menu opens with Alt+F10 while in a level; there is no pause-menu butt
 
 Practice use only; do not use for verified or leaderboard runs. Auto-input features can act without an on-screen watermark.
 
+## Stronger buffering and orb control
+New installs start at the 4-frame stage. Choose **Aggressive** in the buffer menu for a 16-frame window, ship buffering, a shorter wave spam threshold and a larger prediction budget; this can cause noticeable frame hitches. Existing stage and settings are preserved until you change them.
+
+A press already touching an orb passes through without a safety veto when no earlier input is queued. For early airborne presses, alignment targets the first detected orb and can choose an activation even when no safe trajectory is predicted. If inputs are already queued, their order is preserved. Ground-to-orb alignment remains optional to avoid replacing ordinary jumps. Predictions are not guaranteed: two-player P2 and platformer movement remain unsupported, and prediction budgets, stage limits and settings still apply.
+
 ## Gravity and mirror portals
 The ghost copies the player's gravity and direction for both upright and upside-down play. Mirror portals only flip the camera, so predictions continue in level coordinates without activating the portal for real. Inverted wave uses a shorter spam threshold and stricter recovery checks; the stage, time budget, practice-only setting, and optional old wave logic still apply. Tight sections may need a larger F6 stage or prediction budget.
 
