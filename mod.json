@@ -108,7 +108,7 @@
 		"wave-spam-gap": {
 			"type": "int",
 			"name": "Wave spam: max gap (ticks)",
-			"description": "Presses/releases closer together than this count as spam. After 3 in a row, wave inputs go straight to the game until you pause. 16 ticks = 4 frames at 60fps (about 7 clicks/sec). Raise it if spam still gets buffered, lower it if tight wave parts stop being buffered.",
+			"description": "Presses/releases closer together than this count as spam. After 3 in a row, wave inputs go straight to the game until you pause. 16 ticks = 4 frames at 60fps (about 7 clicks/sec). Upside-down wave uses at most 6 ticks so tight zigzags stay buffered. Raise it if spam still gets buffered, lower it if tight wave parts stop being buffered.",
 			"default": 16,
 			"min": 4,
 			"max": 40

@@ -10,13 +10,14 @@
 //    number of ticks) and an UNLIMITED stage. v2.78: one max delay for every gamemode
 //    (cube, wave, ship, ball, UFO, robot, spider, swing) - no per-mode caps anymore.
 //  - Smart prediction: ghost uses orbs, pads, gravity portals and speed portals; mode /
-//    size / dual / mirror / teleport portals end the prediction as "safe".
+//    dual / teleport portals end the prediction as "safe"; mirror is visual only.
 //  - Input queue: every input arriving during a delay is shifted by the same amount,
 //    so taps and hold lengths are preserved (no more swallowed clicks / 1-tick taps).
 //  - Time budget per click so big windows don't hitch.
 //  - Fixes: ghost lifetime, init using `this`, time-warp dt, F6 only when GD focused,
 //    dead flipGravity hook priority, optional console, in-game console (stage + live log, hidden by default).
 
+#include "prediction_policy.hpp"
 #include <Geode/Geode.hpp>
 #include <Geode/modify/CCKeyboardDispatcher.hpp>
 #include <Geode/modify/EffectGameObject.hpp>
@@ -702,12 +703,34 @@ namespace {
         ghost->setVisible(false);
         ghost->resetTouchedRings(true);
         ghost->copyAttributes(real);
-        ghost->setScale(real->getScale());
+        // Preserve both axes: a mirrored or inverted sprite need not have uniform scale.
+        ghost->setScaleX(real->getScaleX());
+        ghost->setScaleY(real->getScaleY());
         ghost->setContentSize(real->getContentSize());
         ghost->m_width = real->m_width;
         ghost->m_height = real->m_height;
+        // These are essential physics state, even when the optional full-state copy is off.
+        // Ghosts are reused, so never let a previous normal/inverted run leak into this one.
+        ghost->setPosition(real->getPosition());
+        ghost->m_position = real->m_position;
         ghost->m_gravityMod = real->m_gravityMod;
+        ghost->m_gravity = real->m_gravity;
+        ghost->m_yStart = real->m_yStart;
+        ghost->m_fixGravityBug = real->m_fixGravityBug;
+        ghost->m_yVelocity = real->m_yVelocity;
+        ghost->m_fallSpeed = real->m_fallSpeed;
+        ghost->m_stateFlipGravity = real->m_stateFlipGravity;
+        ghost->m_isGoingLeft = real->m_isGoingLeft;
+        ghost->m_isSideways = real->m_isSideways;
+        ghost->m_lastPortalPos = real->m_lastPortalPos;
         ghost->m_isOnGround = real->m_isOnGround;
+        ghost->m_isShip = real->m_isShip;
+        ghost->m_isBird = real->m_isBird;
+        ghost->m_isBall = real->m_isBall;
+        ghost->m_isDart = real->m_isDart;
+        ghost->m_isRobot = real->m_isRobot;
+        ghost->m_isSpider = real->m_isSpider;
+        ghost->m_isSwing = real->m_isSwing;
         ghost->m_isUpsideDown = real->m_isUpsideDown;
         ghost->m_vehicleSize = real->m_vehicleSize;
         ghost->m_playerSpeed = real->m_playerSpeed;
@@ -744,23 +767,11 @@ namespace {
         // player: cube / ball / ufo / wave / robot / spider / swing, mini, upside down,
         // reverse (going left), sideways, dual. copyAttributes() doesn't carry most of
         // it, the slope state above all (wave and cube riding slopes drifted without it).
-        ghost->m_isShip = real->m_isShip;
-        ghost->m_isBird = real->m_isBird;
-        ghost->m_isBall = real->m_isBall;
-        ghost->m_isDart = real->m_isDart;
-        ghost->m_isRobot = real->m_isRobot;
-        ghost->m_isSpider = real->m_isSpider;
-        ghost->m_isSwing = real->m_isSwing;
-        ghost->m_isGoingLeft = real->m_isGoingLeft;
-        ghost->m_isSideways = real->m_isSideways;
         ghost->m_reverseSync = real->m_reverseSync;
         ghost->m_reverseRelated = real->m_reverseRelated;
         ghost->m_maybeReverseSpeed = real->m_maybeReverseSpeed;
         ghost->m_maybeReverseAcceleration = real->m_maybeReverseAcceleration;
         ghost->m_speedMultiplier = real->m_speedMultiplier;
-        ghost->m_gravity = real->m_gravity;
-        ghost->m_yStart = real->m_yStart;
-        ghost->m_fixGravityBug = real->m_fixGravityBug;
         ghost->m_fixRobotJump = real->m_fixRobotJump;
         ghost->m_enable22Changes = real->m_enable22Changes;
         ghost->m_enableImpulseFix = real->m_enableImpulseFix;
@@ -769,8 +780,6 @@ namespace {
         ghost->m_lastPosition = real->m_lastPosition;  // v2.18: spider / move triggers read it (CBF sets it per tick)
 
         // vertical motion
-        ghost->m_yVelocity = real->m_yVelocity;
-        ghost->m_fallSpeed = real->m_fallSpeed;
         ghost->m_yVelocityBeforeSlope = real->m_yVelocityBeforeSlope;
         ghost->m_yVelocityRelated = real->m_yVelocityRelated;
         ghost->m_yVelocityRelated3 = real->m_yVelocityRelated3;
@@ -845,7 +854,6 @@ namespace {
         ghost->m_stateNoStickX = real->m_stateNoStickX;
         ghost->m_stateNoStickY = real->m_stateNoStickY;
         ghost->m_stateHitHead = real->m_stateHitHead;
-        ghost->m_stateFlipGravity = real->m_stateFlipGravity;
         ghost->m_stateNoAutoJump = real->m_stateNoAutoJump;
         ghost->m_stateScale = real->m_stateScale;
         ghost->m_maybeStateForce2 = real->m_maybeStateForce2;
@@ -1979,12 +1987,17 @@ namespace {
         if (ret >= target || *end == SimEnd::StopSearch) {
             return ret;
         }
+        bool inverted = prediction_policy::invertedWave(p1, p2, dual);
+        // Inverted wave corridors often require another very quick turn. Do not call a
+        // crash safe merely because an unrealistically early hypothetical turn survives.
+        int minimumTurn = prediction_policy::waveMinimumTurn(inverted, st(WAVE_MIN_TURN), st(12));
+        int escape = prediction_policy::waveEscape(inverted, st(WAVE_ESCAPE), st(24));
         for (int margin : WAVE_TURN_MARGINS) {
             int turnAt = ret - st(margin);
-            if (turnAt < st(WAVE_MIN_TURN)) {
+            if (turnAt < minimumTurn) {
                 break;
             }
-            int length = std::min(horizon, turnAt + st(WAVE_ESCAPE));
+            int length = std::min(horizon, turnAt + escape);
             SimEnd turnEnd;
             int turned = simulateOrbs(layer, p1, p2, dual, delay, down, length, turnAt, length, &turnEnd);
             if (turned >= length) {
@@ -2281,7 +2294,7 @@ namespace {
         marginUsed = false;
         using clock = std::chrono::steady_clock;
         auto start = clock::now();
-        int target = std::min(horizon, base + st(12));
+        int target = prediction_policy::waveTarget(prediction_policy::invertedWave(p1, p2, dual), horizon, base, st(12));
         dbgBestK = 0;
         dbgBestRet = -1;
         for (int k = 1; k <= maxDelay; ++k) {
@@ -3045,6 +3058,11 @@ namespace {
         // v2.44: ship is steered by feathering, so it gets its own, much shorter spam gap;
         // otherwise nearly every ship input counted as spam and was never buffered.
         int spamGap = st(anyShip && !anyWave ? std::clamp(buf.shipSpamGap, 2, 40) : std::clamp(buf.spamGap, 4, 40));
+        if (anyWave) {
+            // Keep tight inverted zigzags buffered instead of mistaking them for spam.
+            // Extremely fast inputs still use the existing spam guard.
+            spamGap = prediction_policy::waveSpamGap(spamGap, prediction_policy::invertedWave(p1, p2, dual), st(6));
+        }
         if (buf.sinceInput < spamGap) {
             ++buf.rapid;
         }
@@ -3391,7 +3409,8 @@ namespace {
         // through untouched instead of being moved by up to 10 frames for nothing.
         // v2.75: robot jumps and UFO / swing flaps too (no more half saves there either)
         // v2.81: ship and spider saves must fully clear too, not just live 12 ticks longer
-        int needed = (groundPress || robotPress || ufoPress || robotRelease || dashRelease || spiderPress || shipInput || ballPress) ? horizon : std::min(horizon, base + st(12));
+        int needed = (groundPress || robotPress || ufoPress || robotRelease || dashRelease || spiderPress || shipInput || ballPress)
+            ? horizon : prediction_policy::waveTarget(cubeStyleWave && prediction_policy::invertedWave(p1, p2, dual), horizon, base, st(12));
         int learned = memoryDelay(slice);
         if (learned > 0 && learned <= maxDelay && !(anyWave && buf.waveV46)) {
             int target = needed;
@@ -4591,6 +4610,12 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
         for (int i = 0; i < objectCount; ++i) {
             auto* object = list[i];
             if (!object) {
+                continue;
+            }
+            // Mirror portals only change the camera. Keep predicting in world coordinates,
+            // without forwarding them to the real layer or terminating the ghost path.
+            if (object->m_objectType == GameObjectType::InverseMirrorPortal ||
+                object->m_objectType == GameObjectType::NormalMirrorPortal) {
                 continue;
             }
             auto type = static_cast<unsigned>(object->m_objectType);

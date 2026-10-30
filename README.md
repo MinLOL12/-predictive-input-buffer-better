@@ -7,6 +7,9 @@ The buffer menu opens with Alt+F10 while in a level; there is no pause-menu butt
 
 Practice use only; do not use for verified or leaderboard runs. Auto-input features can act without an on-screen watermark.
 
+## Gravity and mirror portals
+The ghost copies the player's gravity and direction for both upright and upside-down play. Mirror portals only flip the camera, so predictions continue in level coordinates without activating the portal for real. Inverted wave uses a shorter spam threshold and stricter recovery checks; the stage, time budget, practice-only setting, and optional old wave logic still apply. Tight sections may need a larger F6 stage or prediction budget.
+
 ## v2.4 options (mod settings)
 - Wave auto-release (practice only, off by default): lets go for you when holding would crash within the window and letting go survives.
 - Orbs: also try the other choice: if a prediction dies after touching an orb, it is retried with the opposite click/skip choice.
