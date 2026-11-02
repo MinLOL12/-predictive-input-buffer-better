@@ -12,6 +12,9 @@ New installs start at the 4-frame stage. Choose **Aggressive** in the buffer men
 
 A press already touching an orb passes through without a safety veto when no earlier input is queued. For early airborne presses, alignment targets the first detected orb and can choose an activation even when no safe trajectory is predicted. If inputs are already queued, their order is preserved. Ground-to-orb alignment remains optional to avoid replacing ordinary jumps. Predictions are not guaranteed: two-player P2 and platformer movement remain unsupported, and prediction budgets, stage limits and settings still apply.
 
+## Tight wave corridors
+Wave predictions account for gravity portals even with smart prediction off, and each player in dual can activate the portal in a prediction. While a normal-wave sequence is queued, fast inputs keep their timing instead of being collapsed by the spam guard. Both release-to-press and press-to-release follow-up turns are checked, including after gravity changes. Wave saves are checked through the full lookahead or a validated turn-away rather than accepting a short-lived improvement. These checks are limited by the selected stage and prediction time budget; the old v4.6 wave option retains its original queue rules.
+
 ## Gravity and mirror portals
 The ghost copies the player's gravity and direction for both upright and upside-down play. Mirror portals only flip the camera, so predictions continue in level coordinates without activating the portal for real. Inverted wave uses a shorter spam threshold and stricter recovery checks; the stage, time budget, practice-only setting, and optional old wave logic still apply. Tight sections may need a larger F6 stage or prediction budget.
 

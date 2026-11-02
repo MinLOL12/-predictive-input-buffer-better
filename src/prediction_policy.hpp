@@ -29,6 +29,10 @@ namespace prediction_policy {
         return invertedWave ? std::min(configuredGap, invertedGap) : configuredGap;
     }
 
+    constexpr bool strictWaveRecovery(bool startedInverted, bool gravityChanged) {
+        return startedInverted || gravityChanged;
+    }
+
     inline int waveMinimumTurn(bool invertedWave, int normalMinimum, int invertedMinimum) {
         return invertedWave ? invertedMinimum : normalMinimum;
     }
@@ -37,7 +41,4 @@ namespace prediction_policy {
         return invertedWave ? invertedEscape : normalEscape;
     }
 
-    inline int waveTarget(bool invertedWave, int horizon, int base, int improvement) {
-        return invertedWave ? horizon : std::min(horizon, base + improvement);
-    }
 }
