@@ -28,7 +28,7 @@
 		"smart-prediction": {
 			"type": "bool",
 			"name": "Orb / pad / portal prediction",
-			"description": "Let the ghost use orbs, pads, gravity portals and speed portals. Turn off if you see glitches with objects.",
+			"description": "Let the ghost use orbs, pads, gravity portals and speed portals. Wave gravity portals are still predicted when this is off so inverted transitions remain accurate. Turn off if you see glitches with objects.",
 			"default": true
 		},
 		"debug-console": {
@@ -108,7 +108,7 @@
 		"wave-spam-gap": {
 			"type": "int",
 			"name": "Wave spam: max gap (ticks)",
-			"description": "Presses/releases closer together than this count as spam. After 3 in a row, wave inputs go straight to the game until you pause. 6 ticks = 1.5 frames at 60fps. Upside-down wave uses at most 6 ticks. Raise it if spam still gets buffered, lower it if tight wave parts stop being buffered.",
+			"description": "Presses/releases closer together than this count as spam. After 3 in a row, wave inputs go straight to the game until you pause, unless a normal-wave input sequence is already queued (its timing is preserved). 6 ticks = 1.5 frames at 60fps. Upside-down wave uses at most 6 ticks. Raise it if spam still gets buffered, lower it if tight wave parts stop being buffered.",
 			"default": 6,
 			"min": 4,
 			"max": 40

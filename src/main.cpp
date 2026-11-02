@@ -18,6 +18,7 @@
 //    dead flipGravity hook priority, optional console, in-game console (stage + live log, hidden by default).
 
 #include "prediction_policy.hpp"
+#include "wave_rescue_policy.hpp"
 #include "menu_shortcut.hpp"
 #include <Geode/Geode.hpp>
 #include <Geode/modify/CCKeyboardDispatcher.hpp>
@@ -72,6 +73,11 @@ namespace {
                                          typeBit(GameObjectType::CollisionObject) | typeBit(GameObjectType::AnimatedHazard);
 
     constexpr uint64_t HAZARD_TYPES = typeBit(GameObjectType::Hazard) | typeBit(GameObjectType::AnimatedHazard);
+
+    // Wave gravity portals must be predicted even when other smart interactions
+    // are disabled; otherwise the ghost keeps flying in the wrong direction.
+    constexpr uint64_t GRAVITY_PORTAL_TYPES = typeBit(GameObjectType::InverseGravityPortal) |
+        typeBit(GameObjectType::NormalGravityPortal) | typeBit(GameObjectType::GravityTogglePortal);
 
     // Objects the ghost may also interact with when smart prediction is on.
     constexpr uint64_t INTERACT_TYPES =
@@ -171,6 +177,9 @@ namespace {
         bool injecting = false;
         bool ghostDied = false;
         bool ghostHitPortal = false;
+        bool waveGravityChanged = false; // the current/best ghost run crossed a flip
+        bool secondInputFired = false; // a simulated follow-up actually occurred
+        bool rejectPortalSafety = false; // queued-turn checks must reach the second input
         bool realInput = false;
         bool appliedInput = false;
         bool isPlayer1 = true;
@@ -288,6 +297,7 @@ namespace {
         int pathHoldUntil = 0;       // v2.65: live path waits while a click's path is on screen
 
         std::unordered_set<GameObject*> simUsed;
+        wave_rescue_policy::GravityPortalTracker<GameObject> gravityPortals;
         std::vector<ObjSnapshot> snapshots;
     } buf;
 
@@ -1366,6 +1376,7 @@ namespace {
         }
         buf.snapshots.clear();
         buf.simUsed.clear();
+        buf.gravityPortals.clear();
         buf.orbsUsed.clear();
         buf.simDisabled.clear();
     }
@@ -1405,6 +1416,14 @@ namespace {
 
     enum class SimEnd { Ok, StopSearch };
 
+    // Some callers require actual simulated clearance rather than treating an
+    // unsupported mode/teleport portal as proof of safety.
+    struct PortalSafetyGuard {
+        bool previous = buf.rejectPortalSafety;
+        PortalSafetyGuard() { buf.rejectPortalSafety = true; }
+        ~PortalSafetyGuard() { buf.rejectPortalSafety = previous; }
+    };
+
     // Returns ticks survived after the input (horizon = fully safe).
     // releaseAfter: ticks after the input at which the ghost does the opposite (-1 = never).
     // stopAt: stop as soon as this many ticks were survived (the caller already knows
@@ -1418,6 +1437,8 @@ namespace {
         buf.simulating = true;
         buf.ghostDied = false;
         buf.ghostHitPortal = false;
+        buf.waveGravityChanged = false;
+        buf.secondInputFired = false;
         buf.firstOrbTick = -1;
         buf.firstOrb = nullptr;
         buf.usedOrb = nullptr;
@@ -1451,6 +1472,8 @@ namespace {
         // v4.6 wave: before a delayed input fires, the ghost is in the opposite state
         // (holding before a delayed release, released before a delayed press).
         bool waveRun = p1->m_isDart || (second && p2->m_isDart);
+        bool upside1 = buf.ghost1->m_isUpsideDown;
+        bool upside2 = second && buf.ghost2->m_isUpsideDown;
         if (buf.waveV46 && waveRun && delay > 0 && !buf.skipPress) {
             pressGhost(buf.ghost1, !down);
             if (second) {
@@ -1527,6 +1550,7 @@ namespace {
                 ++releaseAfter;
             }
             if (releaseAfter >= 0 && tick == delay + releaseAfter) {
+                buf.secondInputFired = true;
                 // let go of a press (or, for a wave release, press again: the turn back)
                 pressGhost(buf.ghost1, !down);
                 if (second) {
@@ -1558,6 +1582,16 @@ namespace {
                 died = true;
                 break;
             }
+            // Also catch gravity changes applied directly to the player rather
+            // than through GJBaseGameLayer::flipGravity.
+            if ((buf.ghost1->m_isDart && upside1 != buf.ghost1->m_isUpsideDown) ||
+                (second && buf.ghost2->m_isDart && upside2 != buf.ghost2->m_isUpsideDown)) {
+                buf.waveGravityChanged = true;
+            }
+            upside1 = buf.ghost1->m_isUpsideDown;
+            if (second) {
+                upside2 = buf.ghost2->m_isUpsideDown;
+            }
             if (buf.ghost1->m_touchingRings->count() > 0 || (second && buf.ghost2->m_touchingRings->count() > 0)) {
                 buf.lastOrbTick = tick;  // v2.82: still inside an orb at this tick
             }
@@ -1579,7 +1613,7 @@ namespace {
                 buf.recordPath->push_back(buf.ghost1->getPosition());
             }
             if (buf.ghostHitPortal) {
-                safe = tick >= delay;
+                safe = wave_rescue_policy::portalIsSafe(buf.rejectPortalSafety, tick, delay);
                 break;
             }
 
@@ -1671,6 +1705,8 @@ namespace {
         SimEnd firstEnd = *end;
         int best = first;
         float bestYRange = buf.runYRange;  // v2.84: ship straight-fly metric of the best run
+        bool bestWaveGravityChanged = buf.waveGravityChanged;
+        bool bestSecondInputFired = buf.secondInputFired;
         if (buf.tryBothOrbs) {
             buf.orbClick = !buf.assumeOrbs;
             int second = simulate(layer, p1, p2, dual, delay, down, horizon, releaseAfter, stopAt, end);
@@ -1681,6 +1717,8 @@ namespace {
             if (second > best || (second == best && buf.runYRange < bestYRange)) {
                 best = second;
                 bestYRange = buf.runYRange;
+                bestWaveGravityChanged = buf.waveGravityChanged;
+                bestSecondInputFired = buf.secondInputFired;
             }
         }
         // v2.26: some orbs only work when clicked at a specific moment inside them (levels
@@ -1706,6 +1744,8 @@ namespace {
                 if (ret > best || (ret == best && buf.runYRange < bestYRange)) {
                     best = ret;
                     bestYRange = buf.runYRange;
+                    bestWaveGravityChanged = buf.waveGravityChanged;
+                    bestSecondInputFired = buf.secondInputFired;
                     if (best >= stopAt && lateEnd != SimEnd::StopSearch) {
                         *end = SimEnd::Ok;  // a late timing reaches the input after all
                     }
@@ -1716,6 +1756,8 @@ namespace {
             }
         }
         buf.runYRange = bestYRange;
+        buf.waveGravityChanged = bestWaveGravityChanged;
+        buf.secondInputFired = bestSecondInputFired;
         return best;
     }
 
@@ -1956,15 +1998,16 @@ namespace {
     // turn-away checks are skipped (v2.10: saves most of the work in the search).
     int waveScore(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, bool down, int horizon, int target,
         SimEnd* end) {
+        PortalSafetyGuard portalSafetyGuard;
         int ret = simulateOrbs(layer, p1, p2, dual, delay, down, horizon, -1, target, end);
         if (ret >= target || *end == SimEnd::StopSearch) {
             return ret;
         }
-        bool inverted = prediction_policy::invertedWave(p1, p2, dual);
-        // Inverted wave corridors often require another very quick turn. Do not call a
-        // crash safe merely because an unrealistically early hypothetical turn survives.
-        int minimumTurn = prediction_policy::waveMinimumTurn(inverted, st(WAVE_MIN_TURN), st(12));
-        int escape = prediction_policy::waveEscape(inverted, st(WAVE_ESCAPE), st(24));
+        bool strict = prediction_policy::strictWaveRecovery(prediction_policy::invertedWave(p1, p2, dual), buf.waveGravityChanged);
+        // Apply inverted-wave recovery rules to a predicted gravity transition too,
+        // even if the real player was upright at the beginning of the prediction.
+        int minimumTurn = prediction_policy::waveMinimumTurn(strict, st(WAVE_MIN_TURN), st(12));
+        int escape = prediction_policy::waveEscape(strict, st(WAVE_ESCAPE), st(24));
         for (int margin : WAVE_TURN_MARGINS) {
             int turnAt = ret - st(margin);
             if (turnAt < minimumTurn) {
@@ -1984,8 +2027,8 @@ namespace {
         return ret;
     }
 
-    // v2.7 wave search, same rules as the cube: the smallest delay that is safe (or
-    // clearly better than now) wins, so turns are only held back as long as needed.
+    // Wave search uses the smallest delay that clears the lookahead or has a
+    // validated turn-away, so turns are only held back as long as needed.
     // v2.12 robot scoring. A robot press is a jump whose height you set by when you let go,
     // so "pressing now crashes" only if NO release time saves it. Your usual hold is tried
     // first, then short to long holds. (Before, only your usual hold was tested, so a press
@@ -2262,12 +2305,14 @@ namespace {
 
     bool marginUsed = false;  // the last wave save took the +1 tick safety margin
 
-    int searchWave(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, bool down, int horizon, int maxDelay, int base,
+    int searchWave(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, bool down, int horizon, int maxDelay,
         int* landed) {
         marginUsed = false;
         using clock = std::chrono::steady_clock;
         auto start = clock::now();
-        int target = prediction_policy::waveTarget(prediction_policy::invertedWave(p1, p2, dual), horizon, base, st(12));
+        // A short partial gain can still crash in the same tight corridor. Require
+        // the full lookahead, or a validated turn-away, in either gravity direction.
+        int target = horizon;
         dbgBestK = 0;
         dbgBestRet = -1;
         for (int k = 1; k <= maxDelay; ++k) {
@@ -2835,28 +2880,24 @@ namespace {
         return text;
     }
 
-    // v2.80 queued early-release rescue. Inputs made while a delayed press is still
-    // waiting used to be shifted blindly to preserve your rhythm, so letting go too soon
-    // after a buffered wave / ship turn (or robot jump) was never checked: the shifted
-    // release could drop you straight onto a hazard just past the turn. When exactly one
-    // press is pending, the real sequence (press when queued, release after the shifted
-    // hold) is simulated from now. If that release crashes right after letting go, longer
-    // holds are tried and the release is queued at the first hold that clears the hazard:
-    // how early you let go is how much longer you are kept holding. Anything else keeps
-    // the old shift, so normal tap/hold rhythm is untouched.
-    bool rescueQueuedRelease(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, bool anyWave, bool anyShip, bool mini,
-        int early) {
-        if (buf.queue.size() != 1 || !buf.queue.front().down) {
+    // Predict both sides of a queued wave/ship zigzag. Either a press or release
+    // can be the first turn; the next turn may need to be delayed to clear a corner.
+    // Robot keeps the original press-then-release behaviour.
+    bool rescueQueuedTurn(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, bool anyWave, bool anyShip, bool mini,
+        int early, bool down) {
+        bool anyRobot = p1->m_isRobot || (p2 && p2->m_isRobot);
+        if (buf.queue.empty() || !wave_rescue_policy::canRescue(static_cast<int>(buf.queue.size()),
+                buf.queue.front().down, down, anyWave, anyShip, anyRobot)) {
             return false;
         }
-        bool anyRobot = p1->m_isRobot || (p2 && p2->m_isRobot);
+        // A mode/teleport portal normally ends a simulation as "safe". That is
+        // not proof that the queued second input fired, so count only observed ticks.
+        PortalSafetyGuard portalSafetyGuard;
+        bool firstDown = buf.queue.front().down;
         bool flyer = anyWave || anyShip;
-        if (!flyer && !anyRobot) {
-            return false;  // hold length only steers wave / ship / robot here (dash ends are main-path releases)
-        }
-        int pressIn = std::max(0, buf.queue.front().ticksLeft);
-        int naturalIn = std::max({ buf.shift - early, pressIn, 0 });
-        int naturalHold = naturalIn - pressIn;
+        int firstIn = std::max(0, buf.queue.front().ticksLeft);
+        int naturalIn = std::max({ buf.shift - early, firstIn, 0 });
+        int naturalInterval = naturalIn - firstIn;
         int cap = st(buf.ticksAll);
         if (buf.lowLatency) {
             cap = std::min(cap, st(4));
@@ -2864,71 +2905,75 @@ namespace {
         if (cap <= 0) {
             return false;
         }
-        int horizon = flyer ? fullFlyerHorizon() : st(std::clamp(buf.groundHorizon, 48, 240));
+        int baseHorizon = flyer ? fullFlyerHorizon() : st(std::clamp(buf.groundHorizon, 48, 240));
         if (anyWave) {
-            horizon = fullWaveHorizon(mini);
+            baseHorizon = fullWaveHorizon(mini);
         }
-        int clearTicks = st(20);  // survived this long after letting go = past the close hazard
-        auto accepted = [&](int hold, int ret) {
-            return ret >= horizon || (flyer && ret - hold >= clearTicks);
+        int clearance = st(20);
+        auto horizonFor = [&](int interval) {
+            // The old fixed horizon could end before the second turn even happened,
+            // or immediately afterwards, and incorrectly call that a safe rescue.
+            return wave_rescue_policy::lookahead(baseHorizon, interval, clearance);
+        };
+        auto accepted = [&](int interval, int ret, int horizon) {
+            return flyer ? wave_rescue_policy::clearsNextTurn(buf.secondInputFired, ret, interval, clearance)
+                         : (buf.secondInputFired && ret >= horizon);
         };
 
+        int naturalHorizon = horizonFor(naturalInterval);
         SimEnd end;
-        int natural = simulateOrbs(layer, p1, p2, dual, pressIn, true, horizon, naturalHold, horizon, &end);
-        // StopSearch: the queued press itself never gets to fire. natural < naturalHold:
-        // the crash is while still holding, so holding longer can't change it. A flyer
-        // that lives clearTicks past letting go has time for your next input: not "too soon".
-        if (end == SimEnd::StopSearch || natural >= horizon || natural < naturalHold ||
-            (flyer && natural - naturalHold >= clearTicks)) {
+        int natural = simulateOrbs(layer, p1, p2, dual, firstIn, firstDown, naturalHorizon, naturalInterval, naturalHorizon, &end);
+        if (end == SimEnd::StopSearch || wave_rescue_policy::diedBeforeNextTurn(natural, naturalInterval) || accepted(naturalInterval, natural, naturalHorizon)) {
             return false;
         }
 
-        int foundHold = -1;
+        int foundInterval = -1;
         int foundRet = 0;
-        for (int hold = naturalHold + 1; hold <= naturalHold + cap; ++hold) {
+        for (int interval = naturalInterval + 1; interval <= naturalInterval + cap; ++interval) {
             if (clickMs() > buf.budgetMs) {
                 if (buf.explain) {
-                    say("queued release: prediction budget hit at hold {}t", hold);
+                    say("queued turn: prediction budget hit at {}t", interval);
                 }
                 break;
             }
+            int horizon = horizonFor(interval);
             SimEnd e;
-            int ret = simulateOrbs(layer, p1, p2, dual, pressIn, true, horizon, hold, horizon, &e);
-            if (e == SimEnd::StopSearch || ret < hold) {
-                break;  // dies before this release would fire: longer holds die the same way
+            int ret = simulateOrbs(layer, p1, p2, dual, firstIn, firstDown, horizon, interval, horizon, &e);
+            if (e == SimEnd::StopSearch || wave_rescue_policy::diedBeforeNextTurn(ret, interval)) {
+                break;  // the ghost died before this second turn could affect it
             }
-            if (accepted(hold, ret)) {
-                foundHold = hold;
+            if (accepted(interval, ret, horizon)) {
+                foundInterval = interval;
                 foundRet = ret;
                 break;
             }
         }
-        if (foundHold < 0) {
+        if (foundInterval < 0) {
             return false;
         }
-        int extra = foundHold - naturalHold;
+        int extra = foundInterval - naturalInterval;
         if (buf.avoidMovers) {
             SimEnd e;
             buf.sawMover = false;
             buf.trackMovers = true;
-            simulateOrbs(layer, p1, p2, dual, pressIn, true, horizon, foundHold, horizon, &e);
+            int horizon = horizonFor(foundInterval);
+            simulateOrbs(layer, p1, p2, dual, firstIn, firstDown, horizon, foundInterval, horizon, &e);
             buf.trackMovers = false;
             if (buf.sawMover) {
                 if (buf.explain) {
-                    say("queued release +{}t skipped: moving objects ahead", extra);
+                    say("queued turn +{}t skipped: moving objects ahead", extra);
                 }
                 return false;
             }
         }
-        if (trainInstead(layer, extra, false, "queued")) {
-            return false;  // hint only: the caller queues the normal shifted release
+        if (trainInstead(layer, extra, down, "queued")) {
+            return false;
         }
         noteSave(layer, extra);
-        say("SAVED queued release +{}t ({:g}f): let go {}t after the delayed press, crash {}t after letting go -> {}", extra,
-            extra * TICK, naturalHold, std::max(0, natural - naturalHold),
-            foundRet >= horizon ? std::string("safe") : fmt::format("{}t clear", std::max(0, foundRet - foundHold)));
-        buf.shift += extra;  // follow-up inputs keep their spacing after the rescued release
-        queueInput(pressIn + foundHold, false);
+        say("SAVED queued {} +{}t ({:g}f): turn {}t after first, {}t clear", down ? "press" : "release", extra,
+            extra * TICK, foundInterval, std::max(0, foundRet - foundInterval));
+        buf.shift += extra;
+        queueInput(firstIn + foundInterval, down);
         return true;
     }
 
@@ -3039,8 +3084,8 @@ namespace {
         // Wave spam: don't fight fast inputs. Counted for every input, including ones made
         // while a delayed input is waiting (v2.5.1 skipped those, so a spam that started
         // with a buffered click never reached the streak and its taps got collapsed).
-        // Once the streak is reached, anything still waiting is dropped and your inputs
-        // go straight to the game until you pause for longer than the spam gap.
+        // Once the streak is reached, new inputs normally pass through until you pause.
+        // Default wave rules preserve an existing queued rhythm instead of collapsing it.
         // v2.44: ship is steered by feathering, so it gets its own, much shorter spam gap;
         // otherwise nearly every ship input counted as spam and was never buffered.
         int spamGap = st(anyShip && !anyWave ? std::clamp(buf.shipSpamGap, 2, 40) : std::clamp(buf.spamGap, 4, 40));
@@ -3060,7 +3105,8 @@ namespace {
         bool anyBall = p1->m_isBall || (p2 && p2->m_isBall);
         bool anySwing = p1->m_isSwing || (p2 && p2->m_isSwing);
         if ((anyWave || anyShip || (anyUfo && buf.ufoSmart) || (anyBall && buf.ballSmart) || (anySwing && buf.swingSmart)) &&
-            !buf.shipStraight && buf.rapid >= SPAM_STREAK) {
+            !buf.shipStraight && buf.rapid >= SPAM_STREAK &&
+            !wave_rescue_policy::preserveQueueOnSpam(anyWave, buf.waveV46, buf.queue.empty())) {
             if (buf.explain) {
                 say("pass {}: spam ({} fast inputs in a row, gap < {}t)", down ? "press" : "release", buf.rapid, spamGap);
             }
@@ -3102,9 +3148,8 @@ namespace {
         // A delay is in progress: shift this input by the same amount so your
         // rhythm (tap length, hold length, follow-up clicks) is preserved.
         if (!buf.queue.empty()) {
-            // v2.80: exception - a release let go too soon after a still-queued press is
-            // checked (and held longer) if it would crash right after letting go.
-            if (!down && rescueQueuedRelease(layer, p1, p2, dual, anyWave, anyShip, mini, early)) {
+            // Check both press->release and release->press in wave and ship.
+            if (rescueQueuedTurn(layer, p1, p2, dual, anyWave, anyShip, mini, early, down)) {
                 return true;
             }
             int after = buf.queue.back().ticksLeft;
@@ -3404,8 +3449,8 @@ namespace {
         // through untouched instead of being moved by up to 10 frames for nothing.
         // v2.75: robot jumps and UFO / swing flaps too (no more half saves there either)
         // v2.81: ship and spider saves must fully clear too, not just live 12 ticks longer
-        int needed = (groundPress || robotPress || ufoPress || robotRelease || dashRelease || spiderPress || shipInput || ballPress)
-            ? horizon : prediction_policy::waveTarget(cubeStyleWave && prediction_policy::invertedWave(p1, p2, dual), horizon, base, st(12));
+        int needed = (groundPress || robotPress || ufoPress || robotRelease || dashRelease || spiderPress || shipInput || ballPress || cubeStyleWave)
+            ? horizon : std::min(horizon, base + st(12));
         int learned = memoryDelay(slice);
         if (learned > 0 && learned <= maxDelay && !(anyWave && buf.waveV46)) {
             int target = needed;
@@ -3418,7 +3463,7 @@ namespace {
             }
         }
         if (saved <= 0) {
-            saved = cubeStyleWave ? searchWave(layer, p1, p2, dual, down, horizon, maxDelay, base, &landed)
+            saved = cubeStyleWave ? searchWave(layer, p1, p2, dual, down, horizon, maxDelay, &landed)
                   : robotPress    ? (buf.robotSmart ? searchTwoPass(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
                             return robotScore(layer, p1, p2, dual, k, horizon, target, e);
                         }, true)
@@ -4578,7 +4623,20 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
     // state is snapshotted and restored afterwards so the real player is unaffected.
     bool canBeActivatedByPlayer(PlayerObject* player, EffectGameObject* object) {
         if (buf.simulating) {
-            if (!buf.smart || !isGhost(player) || !object) {
+            if (!isGhost(player) || !object) {
+                return false;
+            }
+            // Both ghosts may independently pass the same gravity portal in dual.
+            // Keep the object snapshot shared, but the activation guard per ghost.
+            bool waveGravity = player->m_isDart && hasType(GRAVITY_PORTAL_TYPES, object);
+            if (waveGravity) {
+                if (!buf.gravityPortals.activate(object, player == buf.ghost2)) {
+                    return false;
+                }
+                snapshotObject(object);
+                return true;
+            }
+            if (!buf.smart) {
                 return false;
             }
             // v2.16: an orb can be checked on every tick you're inside it. Before, the first
@@ -4614,6 +4672,9 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
         // Hot loop: runs for every nearby object, every ghost tick. One type lookup per
         // object, no bounds-checked at(), and the ghost rect is only fetched if needed.
         uint64_t keep = buf.smart ? (COLLIDING_TYPES | INTERACT_TYPES) : COLLIDING_TYPES;
+        if (player->m_isDart) {
+            keep |= GRAVITY_PORTAL_TYPES;
+        }
         bool haveRect = false;
         CCRect ghostRect;
         auto& list = *objects;
@@ -4756,8 +4817,12 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
     // Gravity portals / blue pads / blue orbs: flip only the ghost, no layer effects.
     void flipGravity(PlayerObject* player, bool flip, bool noEffects) {
         if (buf.simulating) {
-            if (buf.smart && isGhost(player)) {
+            if (isGhost(player) && (buf.smart || player->m_isDart)) {
+                bool before = player->m_isUpsideDown;
                 player->flipGravity(flip, true);
+                if (player->m_isDart && before != player->m_isUpsideDown) {
+                    buf.waveGravityChanged = true;
+                }
             }
             return;
         }
