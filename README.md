@@ -1,9 +1,22 @@
 # Click Before Frames (Geode)
 
 ## Keys
-F6 cycle stage | F7 menu | F8 copy the console log | F9 open/close the in-game console | F10 path view | F11 forget this level's memory
+F6 cycle stage | Alt+F10 menu | F8 copy the console log | F9 open/close the in-game console | F10 path view | F11 forget this level's memory
 
-Practice use only; do not use for verified or leaderboard runs.
+The buffer menu opens with Alt+F10 while in a level; there is no pause-menu button. The other keys can be rebound in mod settings.
+
+Practice use only; do not use for verified or leaderboard runs. Auto-input features can act without an on-screen watermark.
+
+## Stronger buffering and orb control
+New installs start at the 4-frame stage. Choose **Aggressive** in the buffer menu for a 16-frame window, ship buffering, a shorter wave spam threshold and a larger prediction budget; this can cause noticeable frame hitches. Existing stage and settings are preserved until you change them.
+
+A press already touching an orb passes through without a safety veto when no earlier input is queued. For early airborne presses, alignment targets the first detected orb and can choose an activation even when no safe trajectory is predicted. If inputs are already queued, their order is preserved. Ground-to-orb alignment remains optional to avoid replacing ordinary jumps. Predictions are not guaranteed: two-player P2 and platformer movement remain unsupported, and prediction budgets, stage limits and settings still apply.
+
+## Tight wave corridors
+Wave predictions account for gravity portals even with smart prediction off, and each player in dual can activate the portal in a prediction. While a normal-wave sequence is queued, fast inputs keep their timing instead of being collapsed by the spam guard. Both release-to-press and press-to-release follow-up turns are checked, including after gravity changes. Wave saves are checked through the full lookahead or a validated turn-away rather than accepting a short-lived improvement. These checks are limited by the selected stage and prediction time budget; the old v4.6 wave option retains its original queue rules.
+
+## Gravity and mirror portals
+The ghost copies the player's gravity and direction for both upright and upside-down play. Mirror portals only flip the camera, so predictions continue in level coordinates without activating the portal for real. Inverted wave uses a shorter spam threshold and stricter recovery checks; the stage, time budget, practice-only setting, and optional old wave logic still apply. Tight sections may need a larger F6 stage or prediction budget.
 
 ## v2.4 options (mod settings)
 - Wave auto-release (practice only, off by default): lets go for you when holding would crash within the window and letting go survives.
@@ -33,7 +46,7 @@ Practice use only; do not use for verified or leaderboard runs.
 - v2.40 UFO: crashes you could have flapped away from count as safe, landing counts as safe, smallest delay wins, spam guard for fast flapping.
 - v2.41 FPS: moving-object tracking drops far objects and keeps a short moving-now list (was checking up to 4096 objects every step and every prediction).
 - v2.43: more time at death spots - where you keep dying, react-only-safe inputs get the delay that pushes the crash furthest away.
-- v2.44: in-game menu (pause menu 'Buffer' button or F7): stage, main switches, status, all settings / copy log / forget level. Ship: own spam gap (feathering is buffered), max delay 4, on by default.
+- v2.44: in-game menu (originally opened via the pause-menu button or F7; now Alt+F10): stage, main switches, status, all settings / copy log / forget level. Ship: own spam gap (feathering is buffered), max delay 4, on by default.
 - v2.45 ball: short flips count as landings, landings must last 8 ticks, spam guard for fast flipping; menu switch.
 - v2.46 watermark (always on, not configurable): 'Basu Input Buffer | stage' in the level while the buffer is on, and 'Basu Input Buffer was on' on the level complete screen if it was on during the attempt.
 - v2.49: ghost no longer touches collision blocks (could break collision triggers); spam guard sends waiting inputs instead of dropping them (lost clicks broke click/event triggers).

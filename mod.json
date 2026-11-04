@@ -28,7 +28,7 @@
 		"smart-prediction": {
 			"type": "bool",
 			"name": "Orb / pad / portal prediction",
-			"description": "Let the ghost use orbs, pads, gravity portals and speed portals. Turn off if you see glitches with objects.",
+			"description": "Let the ghost use orbs, pads, gravity portals and speed portals. Wave gravity portals are still predicted when this is off so inverted transitions remain accurate. Turn off if you see glitches with objects.",
 			"default": true
 		},
 		"debug-console": {
@@ -108,7 +108,7 @@
 		"wave-spam-gap": {
 			"type": "int",
 			"name": "Wave spam: max gap (ticks)",
-			"description": "Presses/releases closer together than this count as spam; after 3 in a row inputs go straight to the game until you pause. Cube-style wave is stricter about calling you a spammer: only gaps under 4 ticks (1 frame) count and it takes 6 in a row, so the fastest controlled wave turns stay buffered. 6 ticks = 1.5 frames at 60fps.",
+			"description": "Presses/releases closer together than this count as spam. After 3 in a row, wave inputs go straight to the game until you pause, unless a normal-wave input sequence is already queued (its timing is preserved). 6 ticks = 1.5 frames at 60fps. Upside-down wave uses at most 6 ticks. Raise it if spam still gets buffered, lower it if tight wave parts stop being buffered.",
 			"default": 6,
 			"min": 4,
 			"max": 40
@@ -116,7 +116,7 @@
 		"orb-align": {
 			"type": "bool",
 			"name": "Orb alignment",
-			"description": "If you press a little before reaching an orb (and the press wouldn't hit it), the press is held back until you're inside the orb so it hits. Works for every mode except ship and wave. Needs 'Orb / pad / portal prediction' on.",
+			"description": "If an airborne press misses the first orb ahead, hold it until that same orb can be activated. Fully safe timings are preferred, but an orb-activating timing can be used even if no safe path is predicted. Presses already touching an orb pass through unchanged. Works for every mode except ship and wave. Needs 'Orb / pad / portal prediction' on.",
 			"default": true
 		},
 		"orb-align-ticks": {
@@ -178,7 +178,7 @@
 		"auto-release-normal-runs": {
 			"type": "bool",
 			"name": "Auto-release in normal runs",
-			"description": "Let auto-release (wave / robot / dash) also work outside practice mode. While it can act, an 'AUTO INPUTS ON' tag is shown on screen. Never use it for verified or leaderboard runs.",
+			"description": "Let auto-release (wave / robot / dash) also work outside practice mode. Never use it for verified or leaderboard runs.",
 			"default": false
 		},
 		"spider-smart": {
@@ -208,7 +208,7 @@
 		"orb-timing": {
 			"type": "bool",
 			"name": "Orb timing",
-			"description": "For orbs that only work at a specific moment inside them (frame perfects): a press already inside an orb that would crash is re-timed to any tick while you pass through the orb - the middle of the longest fully-safe click window wins - the orb timing that worked at a spot before is tried first, and predictions of later orbs in a chain also try clicking them 3 / 6 ticks into them, plus 10 / 14 / 20 ticks while enough prediction budget remains for the main save search.",
+			"description": "For frame-perfect orbs, retry timings while passing through the same orb and prefer the middle of a fully-safe window. A press already touching an orb is passed through unchanged. Predictions of later orbs in a chain also try later clicks while enough time budget remains.",
 			"default": true
 		},
 		"cube-late-crash": {
@@ -346,12 +346,6 @@
 			"name": "Key: change stage",
 			"description": "F1-F12, a letter (A-Z) or a number (0-9). Empty or None = no key.",
 			"default": "F6"
-		},
-		"key-menu": {
-			"type": "string",
-			"name": "Key: open menu",
-			"description": "F1-F12, a letter (A-Z) or a number (0-9). Empty or None = no key.",
-			"default": "F7"
 		},
 		"key-export": {
 			"type": "string",
