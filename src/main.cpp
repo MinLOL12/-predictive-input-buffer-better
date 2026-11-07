@@ -252,7 +252,9 @@ namespace {
         bool ignoreTouching = true;  // v2.31: hazards you touch right now without dying can't kill the ghost
         bool haveRealRect = false;
         CCRect realRect1, realRect2;  // your hitboxes when the prediction starts
+        CCRect coreRect1, coreRect2;  // v2.91: the middle of those hitboxes (see coreOf)
         std::unordered_set<GameObject*> harmless;  // hazards on you at the start of this prediction
+        int runHarmless = 0;          // v2.91: hazards this run ignored as "you are touching it"
         int baseEscape = -1;         // v2.36: press-now run only survives if you react by this tick
         int baseCrash = -1;          // v2.36: ...otherwise it crashes here
         bool lowLatency = false;     // v2.35: never chain delays, small budget and max delay
@@ -1434,6 +1436,17 @@ namespace {
         buf.simDisabled.clear();
     }
 
+    // v2.91: the middle 40% of a hitbox. "A hazard you are touching right now can't kill the
+    // ghost" (v2.31) used the full object rect, and GD's spike / hazard rects are noticeably
+    // bigger than the boxes that actually kill you - so in tight sections almost every spike the
+    // player was merely close to got ignored for a whole prediction and the run read safe. Only a
+    // hazard that reaches the middle of the player counts now (a spike sitting on you still does).
+    CCRect coreOf(CCRect const& r) {
+        float w = r.size.width * 0.4f;
+        float h = r.size.height * 0.4f;
+        return CCRect(r.getMinX() + (r.size.width - w) * 0.5f, r.getMinY() + (r.size.height - h) * 0.5f, w, h);
+    }
+
     void advanceGhost(PlayerObject* ghost, float dt) {
         ghost->update(dt);
         ghost->updateRotation(dt);
@@ -1505,6 +1518,8 @@ namespace {
         if (buf.haveRealRect) {
             buf.realRect1 = p1->getObjectRect();
             buf.realRect2 = second ? p2->getObjectRect() : buf.realRect1;
+            buf.coreRect1 = coreOf(buf.realRect1);
+            buf.coreRect2 = coreOf(buf.realRect2);
         }
         copyState(buf.ghost1, p1);
         if (second) {
@@ -1727,6 +1742,7 @@ namespace {
             *end = SimEnd::StopSearch;
         }
         buf.runOrbs = static_cast<int>(buf.orbsUsed.size());
+        buf.runHarmless = static_cast<int>(buf.harmless.size());
         restoreObjects();
         buf.ghost1->stopAllActions();
         if (buf.ghost2) {
@@ -3478,7 +3494,8 @@ namespace {
                                  : simulateOrbs(layer, p1, p2, dual, 0, down, horizon, releaseAfter, horizon, &end);
         buf.captureKiller = false;
         buf.trackMovers = false;
-        const int baseOrbs = buf.runOrbs;  // v2.90: orbs the ghost clicked for you in that run
+        const int baseOrbs = buf.runOrbs;      // v2.90: orbs the ghost clicked for you in that run
+        const int baseHarmless = buf.runHarmless;  // v2.91: hazards it ignored as "you're touching it"
 
         // v2.30 diagnostics: a ghost that dies within a few ticks while you live means the
         // prediction doesn't match you there. Log what killed it and how both hitboxes compare.
@@ -3601,8 +3618,9 @@ namespace {
                         buf.baseEscape, buf.baseCrash, baseOrbs > 0 ? fmt::format(" - {} orb{} assumed clicked", baseOrbs, baseOrbs == 1 ? "" : "s") : "");
                 }
                 else {
-                    say("pass {}{}: safe now (survives the {}t look-ahead{})", down ? "press" : "release", tickTag, horizon,
-                        baseOrbs > 0 ? fmt::format(", the ghost clicked {} orb{} for you", baseOrbs, baseOrbs == 1 ? "" : "s") : "");
+                    say("pass {}{}: safe now (survives the {}t look-ahead{}{})", down ? "press" : "release", tickTag, horizon,
+                        baseOrbs > 0 ? fmt::format(", the ghost clicked {} orb{} for you", baseOrbs, baseOrbs == 1 ? "" : "s") : "",
+                        baseHarmless > 0 ? fmt::format(", ignoring {} hazard{} you are touching", baseHarmless, baseHarmless == 1 ? "" : "s") : "");
                 }
             }
             decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
@@ -4971,7 +4989,7 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
                     }
                     if (buf.simTick <= 1) {
                         auto const& r = object->getObjectRect();
-                        if (r.intersectsRect(buf.realRect1) || r.intersectsRect(buf.realRect2)) {
+                        if (r.intersectsRect(buf.coreRect1) || r.intersectsRect(buf.coreRect2)) {
                             buf.harmless.insert(object);
                             continue;
                         }

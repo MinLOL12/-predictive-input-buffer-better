@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.90.0",
+	"version": "v2.91.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -228,7 +228,7 @@
 		"ignore-touching-hazards": {
 			"type": "bool",
 			"name": "Ignore hazards you're touching",
-			"description": "Spikes / saws that overlap you at the moment of the click while you're alive can't be what kills you (e.g. a spike the level makes follow the player, or noclip), so predictions ignore them. Fixes predictions that died on their very first tick (GRIEF's wave).",
+			"description": "Spikes / saws that overlap you at the moment of the click while you're alive can't be what kills you (e.g. a spike the level makes follow the player, or noclip), so predictions ignore them. Fixes predictions that died on their very first tick (GRIEF's wave). v2.91: only a hazard that reaches the MIDDLE of your hitbox counts as 'you're touching it' (the middle 40%). Before, the full object rect was used, and GD's hazard rects are bigger than the boxes that kill you - so in tight sections almost every spike you were merely close to was ignored for a whole prediction, which made the run read safe and stopped the mod from saving you.",
 			"default": true
 		},
 		"death-log": {
