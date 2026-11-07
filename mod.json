@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.88.0",
+	"version": "v2.89.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -40,7 +40,7 @@
 		"ground-horizon": {
 			"type": "int",
 			"name": "Cube / ball lookahead (ticks)",
-			"description": "How far ahead the prediction looks for cube, ball and spider. A cube jump lasts about 100 ticks, so the old 48 never saw the landing. Higher = catches later hits but costs more time per click.",
+			"description": "How far ahead the prediction looks for cube, ball and spider. A cube jump lasts about 100 ticks, so the old 48 never saw the landing. Higher = catches later hits but costs more time per click. v2.89: the mod adds 12 ticks (3 frames at 60 fps) on top of this when it decides, because a crash sitting just past the look-ahead used to read as 'safe now' and the input was passed straight through - it looked like the mod refused to click.",
 			"default": 130,
 			"min": 48,
 			"max": 240
@@ -62,7 +62,7 @@
 		"flyer-horizon": {
 			"type": "int",
 			"name": "Ship / UFO / swing lookahead (ticks)",
-			"description": "How far ahead ship, UFO and swing predictions look. These modes used to be fixed at 48 ticks (12 frames) - shorter than one ship arc, UFO flap or swing flip - so the crash an early input caused usually landed past the look-ahead and the input passed through unsaved. 80 ticks = 20 frames at 60fps. Higher catches later crashes but costs more time per click.",
+			"description": "How far ahead ship, UFO and swing predictions look. These modes used to be fixed at 48 ticks (12 frames) - shorter than one ship arc, UFO flap or swing flip - so the crash an early input caused usually landed past the look-ahead and the input passed through unsaved. 80 ticks = 20 frames at 60fps. Higher catches later crashes but costs more time per click. v2.89: the mod adds 12 ticks (3 frames at 60 fps) on top of this when it decides, because a crash sitting just past the look-ahead used to read as 'safe now' and the input was passed straight through - it looked like the mod refused to click.",
 			"default": 80,
 			"min": 48,
 			"max": 240
