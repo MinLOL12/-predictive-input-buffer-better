@@ -12,7 +12,7 @@ jobs:
       - name: Build the mod
         uses: geode-sdk/build-geode-mod@main
         with:
-          sdk: stable
+          sdk: given
           combine: true
   package:
     name: Package builds
