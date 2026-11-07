@@ -63,6 +63,12 @@ namespace {
     // v2.87: an orb re-time in a mode without the fully-safe rule must at least push the crash
     // this far out (2 frames) to count as a save.
     constexpr int ORB_RETIME_MARGIN = 8;
+    // v2.89: how much further than the look-ahead setting the ghost runs before an input counts
+    // as safe (12 ticks = 3 frames at 60 fps). The look-ahead used to end exactly at the
+    // setting's distance, so an input that only died a couple of frames later - to the obstacle
+    // right behind the one you asked about - still read "safe now" and was passed through
+    // untouched. From the outside that looked like the mod refusing to click at all.
+    constexpr int LOOKAHEAD_TAIL = 12;
     // v2.78: internal safety ceiling for "unlimited" (= 100 seconds / 6000 frames at 60fps).
     // Never the binding limit in practice: searches end on their own via the time budget,
     // the same-crash rule, or the ghost dying while coasting before a delayed input fires.
@@ -3327,6 +3333,11 @@ namespace {
         int horizon = anyFlyer ? fullFlyerHorizon() : st(std::clamp(buf.groundHorizon, 48, 240));
         if (anyWave) {
             horizon = fullWaveHorizon(mini);
+        }
+        else {
+            // v2.89: look a few frames further than the setting says. Wave keeps its own tuned
+            // rules, everything else gets the pad.
+            horizon += st(LOOKAHEAD_TAIL);
         }
         // v2.78: the stage's max delay, the same for every gamemode - wave and ship no
         // longer have their own smaller caps (ship used to be clamped to 16 ticks here).
