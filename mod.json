@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.86.0",
+	"version": "v2.87.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -202,7 +202,7 @@
 		"orb-timing": {
 			"type": "bool",
 			"name": "Orb timing",
-			"description": "For frame-perfect orbs, retry timings while passing through the same orb and prefer the middle of a fully-safe window. v2.86: this now also covers the click that actually hits an orb. A press made while already inside an orb used to be passed to the game unchanged, so this setting could never change an orb click; now, if that click does not survive the look-ahead, every tick of the pass through the same orb is tried and a timing that lives strictly longer is used instead. A click that is already safe is never moved. Needs 'Orb alignment' and 'Orb / pad / portal prediction'. Predictions of later orbs in a chain also try later clicks while enough time budget remains.",
+			"description": "For frame-perfect orbs, retry timings while passing through the same orb. v2.86/v2.87: this covers the click that actually hits an orb. A press made while already inside an orb used to be passed to the game unchanged, so this setting could never change a real orb click. Now, if that click does not survive the look-ahead, every tick of the pass through the same orb is tried. Only a save that is expected to hold up is used: it must survive the whole look-ahead, never sit on the last tick you are still touching the orb on (a fraction of a tick of prediction error would put the press outside the orb), and, with 'Robust saves' on, it must also survive with you half a tick ahead of and half a tick behind - otherwise the next tick in the safe window is tried, and if none qualifies your click is passed through untouched. That is why an 'ORB timing' line in the console now means the retime is expected to save you. Needs 'Orb alignment' and 'Orb / pad / portal prediction'.",
 			"default": true
 		},
 		"cube-late-crash": {

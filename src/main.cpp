@@ -60,6 +60,9 @@ namespace {
     constexpr size_t PANEL_LINES = 8;
     constexpr int SPIDER_LAND = 20;  // v2.15: ticks on a surface after a spider input = safe (v2.81: 12 -> 20, spikes just past the landing were unseen)
     constexpr int SPAM_STREAK = 3;  // this many fast inputs in a row = wave spam
+    // v2.87: an orb re-time in a mode without the fully-safe rule must at least push the crash
+    // this far out (2 frames) to count as a save.
+    constexpr int ORB_RETIME_MARGIN = 8;
     // v2.78: internal safety ceiling for "unlimited" (= 100 seconds / 6000 frames at 60fps).
     // Never the binding limit in practice: searches end on their own via the time budget,
     // the same-crash rule, or the ghost dying while coasting before a delayed input fires.
@@ -223,6 +226,7 @@ namespace {
         int orbClickDelay = 0;       // v2.26: ghost orb auto-clicks wait this many ticks into the orb
         int autoAt1 = -1, autoAt2 = -1;      // v2.26: tick a delayed orb auto-click fires (-1 none, -2 done)
         bool orbWasTiming = false;   // v2.26: the last orb save re-timed a press that was already in the orb
+        int orbNowRet = 0;           // v2.87: ticks the click you actually made survived (for the log)
 
         bool tryBothOrbs = true;     // v2.4: if a run touches an orb and dies, retry with the other orb choice
         bool orbClick = true;        // v2.4: orb choice of the current run
@@ -1938,7 +1942,12 @@ namespace {
         if (touch >= 0 && touch <= window) {
             // 2. Pressing now already uses an orb (e.g. held into it).
             int now = simulate(layer, p1, p2, dual, 0, true, horizon, releaseAfter, horizon, &end);
-            bool nowUses = buf.orbUsedTick >= 0;
+            buf.orbNowRet = now;
+            // v2.87: "this press uses an orb" means it activates one right now - not that the
+            // held player happens to pass through an orb many ticks later (that press is not an
+            // orb click, and re-timing it was a waste of the budget). A press that activates an
+            // orb and already survives the look-ahead counts too: a working click is left alone.
+            bool nowUses = (buf.orbUsedTick >= 0 && buf.orbUsedTick <= st(2)) || (buf.orbUsedTick >= 0 && now >= horizon);
             // If the player's actual timing already activates an orb, never change
             // that decision just because a prediction dislikes the resulting path.
             // v2.86: with "Orb timing" on, a press inside the orb whose path does NOT
@@ -1972,7 +1981,11 @@ namespace {
                 int bestRet = -1;
                 int fallbackK = 0, fallbackRet = -1;
                 int runStart = -1, safeStart = -1, safeEnd = -1;
-                for (int k = std::max(1, touch - 1); k <= scanEnd; ++k) {
+                // v2.87: re-timing never uses the very last tick you are still touching the orb
+                // on - a prediction that is a fraction of a tick off would put the press outside
+                // the orb and the click would do nothing at all.
+                int endK = retimingOrb ? std::min(scanEnd, std::max(touch + 1, lastTouch)) : scanEnd;
+                for (int k = std::max(1, touch - 1); k <= endK; ++k) {
                     if (k > legacyAlignEnd && clickMs() > buf.budgetMs) {
                         break;
                     }
@@ -2002,11 +2015,14 @@ namespace {
                     else {
                         runStart = -1;
                     }
-                    // Re-timing a press that already used the orb must actually gain ticks
-                    // (a tie would move a working click for nothing); moving an early press
-                    // onto the orb only has to not die sooner than missing it would.
-                    bool beatsNow = retimingOrb ? ret > now : ret >= std::min(now, horizon);
-                    if (!uses || !beatsNow || ((fullOnly || k > legacyAlignEnd) && ret < horizon)) {
+                    // v2.87: re-timing a click that already used the orb has to be a REAL save.
+                    // Dying three ticks later is not one - claiming that is exactly what made
+                    // "ORB timing" show up right before a death ("sometimes it works, mostly it
+                    // doesn't"). Moving an early press onto the orb only has to not die sooner
+                    // than missing it would.
+                    bool good = retimingOrb ? ret >= now + st(ORB_RETIME_MARGIN)
+                                            : ret >= std::min(now, horizon);
+                    if (!uses || !good || ((fullOnly || k > legacyAlignEnd) && ret < horizon)) {
                         continue;
                     }
                     if (ret > bestRet) {
@@ -2019,10 +2035,53 @@ namespace {
                     found = (safeStart + safeEnd) / 2;
                     *landed = horizon;
                 }
-                else if (found == 0 && fallbackK > 0 && (!retimingOrb || fallbackRet > now)) {
-                    // v2.86: a fallback may keep an early press on the orb even when no path is
-                    // safe, but it must never move a click that already used the orb to a
-                    // timing that dies sooner.
+                if (retimingOrb && found > 0) {
+                    // v2.87: a re-timed orb click has to work in a real run too, not only at the
+                    // exact predicted spot. With "Robust saves" on, the tick must also survive
+                    // with the ghost half a tick ahead of and half a tick behind you: the middle
+                    // of a fully-safe window is tried first, then the rest of that window. If
+                    // none of them is robust the click is left untouched instead of claiming a
+                    // save that dies (the budget can also cut this short).
+                    float shift = std::max(0.3f, 0.5f * (311.58f / 240.f) * (std::abs(p1->m_playerSpeed) / 0.9f));
+                    auto robustTick = [&](int k, int need) {
+                        for (float off : { shift, -shift }) {
+                            buf.ghostShiftX = off;
+                            SimEnd e;
+                            int ret = simulate(layer, p1, p2, dual, k, true, horizon, releaseAfter, horizon, &e);
+                            bool ok = ret >= need && prediction_policy::sameOrb(targetOrb, buf.usedOrb);
+                            buf.ghostShiftX = 0.f;
+                            if (!ok) {
+                                return false;
+                            }
+                        }
+                        return true;
+                    };
+                    int need = *landed >= horizon ? horizon : now + st(ORB_RETIME_MARGIN);
+                    bool ok = buf.robustSaves ? (clickMs() < buf.budgetMs && robustTick(found, need)) : (*landed >= horizon);
+                    if (!ok && safeStart >= 0) {
+                        int pick = 0;
+                        for (int k = safeStart; k <= std::min(safeEnd, endK); ++k) {
+                            if (clickMs() > buf.budgetMs) {
+                                break;
+                            }
+                            if (k != found && robustTick(k, horizon)) {
+                                pick = k;
+                                break;
+                            }
+                        }
+                        found = pick;
+                        if (found > 0) {
+                            *landed = horizon;
+                        }
+                    }
+                    if (buf.explain) {
+                        trace += found > 0 ? " robust" : " not robust";
+                    }
+                }
+                else if (!retimingOrb && found == 0 && fallbackK > 0) {
+                    // v2.86: an airborne press that misses the orb may still fall back to an
+                    // activation of it even when no path is safe. That fallback is never used to
+                    // move a click that already used the orb.
                     found = fallbackK;
                     *landed = fallbackRet;
                 }
@@ -3323,7 +3382,12 @@ namespace {
                 return false;
             }
             if (k > 0) {
-                say("ORB {} +{}t ({:g}f) -> {}t", buf.orbWasTiming ? "timing" : "press", k, k * TICK, orbLanded);
+                if (buf.orbWasTiming) {
+                    say("ORB timing +{}t ({:g}f): your click {}t -> {}t", k, k * TICK, buf.orbNowRet, orbLanded);
+                }
+                else {
+                    say("ORB press +{}t ({:g}f) -> {}t", k, k * TICK, orbLanded);
+                }
                 if (orbLanded >= horizon) {
                     noteSave(layer, k);
                 }
@@ -3332,12 +3396,12 @@ namespace {
                 queueInput(k - early, down);
                 return true;
             }
-            if (orbRetime) {
-                // v2.86: no tick inside the orb beats the click you just made, so the press
-                // reaches the game exactly as before (your timing, no safety veto).
+            if (orbRetime || buf.orbWasTiming) {
+                // v2.86: no tick inside the orb is a real save over the click you just made, so
+                // the press reaches the game exactly as before (your timing, no safety veto).
                 buf.appliedInput = down;
                 if (buf.explain) {
-                    say("orb timing: your click is already the best tick inside the orb");
+                    say("orb timing: no timing inside the orb beats your click");
                 }
                 return false;
             }
