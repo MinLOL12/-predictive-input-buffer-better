@@ -252,7 +252,9 @@ namespace {
         bool ignoreTouching = true;  // v2.31: hazards you touch right now without dying can't kill the ghost
         bool haveRealRect = false;
         CCRect realRect1, realRect2;  // your hitboxes when the prediction starts
+        CCRect coreRect1, coreRect2;  // v2.91: the middle of those hitboxes (see coreOf)
         std::unordered_set<GameObject*> harmless;  // hazards on you at the start of this prediction
+        int runHarmless = 0;          // v2.91: hazards this run ignored as "you are touching it"
         int baseEscape = -1;         // v2.36: press-now run only survives if you react by this tick
         int baseCrash = -1;          // v2.36: ...otherwise it crashes here
         bool lowLatency = false;     // v2.35: never chain delays, small budget and max delay
@@ -311,6 +313,7 @@ namespace {
         GameObject* usedOrb = nullptr;  // first orb actually activated by this ghost run
         int firstOrbTick = -1;       // v2.6: first tick the current run touched an orb
         int orbUsedTick = -1;        // v2.6: first tick the current run actually used an orb
+        int runOrbs = 0;             // v2.90: orbs the ghost clicked for you in the last run (diagnostic)
         int lastOrbTick = -1;        // v2.82: last tick the current run was still inside an orb
         bool driftCheck = false;     // v2.4: log how far the real player strays from the prediction
         std::vector<CCPoint>* recordPath = nullptr;  // v2.4: ghost1 positions of the current run
@@ -1433,6 +1436,17 @@ namespace {
         buf.simDisabled.clear();
     }
 
+    // v2.91: the middle 40% of a hitbox. "A hazard you are touching right now can't kill the
+    // ghost" (v2.31) used the full object rect, and GD's spike / hazard rects are noticeably
+    // bigger than the boxes that actually kill you - so in tight sections almost every spike the
+    // player was merely close to got ignored for a whole prediction and the run read safe. Only a
+    // hazard that reaches the middle of the player counts now (a spike sitting on you still does).
+    CCRect coreOf(CCRect const& r) {
+        float w = r.size.width * 0.4f;
+        float h = r.size.height * 0.4f;
+        return CCRect(r.getMinX() + (r.size.width - w) * 0.5f, r.getMinY() + (r.size.height - h) * 0.5f, w, h);
+    }
+
     void advanceGhost(PlayerObject* ghost, float dt) {
         ghost->update(dt);
         ghost->updateRotation(dt);
@@ -1504,6 +1518,8 @@ namespace {
         if (buf.haveRealRect) {
             buf.realRect1 = p1->getObjectRect();
             buf.realRect2 = second ? p2->getObjectRect() : buf.realRect1;
+            buf.coreRect1 = coreOf(buf.realRect1);
+            buf.coreRect2 = coreOf(buf.realRect2);
         }
         copyState(buf.ghost1, p1);
         if (second) {
@@ -1725,6 +1741,8 @@ namespace {
         if ((died || buf.ghostHitPortal) && tick < delay) {
             *end = SimEnd::StopSearch;
         }
+        buf.runOrbs = static_cast<int>(buf.orbsUsed.size());
+        buf.runHarmless = static_cast<int>(buf.harmless.size());
         restoreObjects();
         buf.ghost1->stopAllActions();
         if (buf.ghost2) {
@@ -1944,6 +1962,23 @@ namespace {
         // a non-safe activation as a fallback.
         int legacyAlignEnd = std::min(scanEnd, touch + st(6));
         std::string trace;  // v2.42: what was tried, for the explain log
+        // v2.90: half a tick of x movement each way (normal speed 0.9 = 311.58 units a second).
+        // Used both to decide whether the click you made is really safe - not just at the exact
+        // predicted spot - and to pick a re-timed tick that is.
+        float orbShift = std::max(0.3f, 0.5f * (311.58f / 240.f) * (std::abs(p1->m_playerSpeed) / 0.9f));
+        auto holdsUp = [&](int k, int need) {
+            for (float off : { orbShift, -orbShift }) {
+                buf.ghostShiftX = off;
+                SimEnd e;
+                int ret = simulate(layer, p1, p2, dual, k, true, horizon, releaseAfter, horizon, &e);
+                bool ok = ret >= need && prediction_policy::sameOrb(targetOrb, buf.usedOrb);
+                buf.ghostShiftX = 0.f;
+                if (!ok) {
+                    return false;
+                }
+            }
+            return true;
+        };
 
         if (touch >= 0 && touch <= window) {
             // 2. Pressing now already uses an orb (e.g. held into it).
@@ -1962,7 +1997,18 @@ namespace {
             // A click that is already fully safe is always left exactly where it is.
             bool retimingOrb = false;
             if (nowUses) {
-                if (!buf.orbTiming || now >= horizon) {
+                bool nowSafe = now >= horizon;
+                // v2.90: an orb click that only works at the exact predicted spot is one that dies
+                // for real - a fraction of a tick either way and the press lands outside the orb.
+                // That is why almost every orb click read "safe" and never got saved: re-time it
+                // like an unsafe click when it doesn't hold up.
+                if (nowSafe && buf.robustSaves && clickMs() < buf.budgetMs && !holdsUp(0, horizon)) {
+                    nowSafe = false;
+                    if (buf.explain) {
+                        trace += " (safe only at the exact spot)";
+                    }
+                }
+                if (!buf.orbTiming || nowSafe) {
                     originalOrbUsed = true;
                     buf.orbClick = buf.assumeOrbs;
                     return 0;
@@ -2053,29 +2099,15 @@ namespace {
                     // window is tried, then the rest of that window, then the next few delays. When
                     // none of them is robust the best pick is still used (and the log says
                     // "fragile") - refusing to click at all was the worse outcome.
-                    float shift = std::max(0.3f, 0.5f * (311.58f / 240.f) * (std::abs(p1->m_playerSpeed) / 0.9f));
-                    auto robustTick = [&](int k, int need) {
-                        for (float off : { shift, -shift }) {
-                            buf.ghostShiftX = off;
-                            SimEnd e;
-                            int ret = simulate(layer, p1, p2, dual, k, true, horizon, releaseAfter, horizon, &e);
-                            bool ok = ret >= need && prediction_policy::sameOrb(targetOrb, buf.usedOrb);
-                            buf.ghostShiftX = 0.f;
-                            if (!ok) {
-                                return false;
-                            }
-                        }
-                        return true;
-                    };
                     int need = *landed;
-                    if (buf.robustSaves && clickMs() < buf.budgetMs && !robustTick(found, need)) {
+                    if (buf.robustSaves && clickMs() < buf.budgetMs && !holdsUp(found, need)) {
                         int pick = 0;
                         if (safeStart >= 0) {
                             for (int k = safeStart; k <= std::min(safeEnd, endK); ++k) {
                                 if (clickMs() > buf.budgetMs) {
                                     break;
                                 }
-                                if (k != found && robustTick(k, horizon)) {
+                                if (k != found && holdsUp(k, horizon)) {
                                     pick = k;
                                     *landed = horizon;
                                     break;
@@ -2086,7 +2118,7 @@ namespace {
                             if (clickMs() > buf.budgetMs) {
                                 break;
                             }
-                            if (robustTick(k, need)) {
+                            if (holdsUp(k, need)) {
                                 pick = k;
                             }
                         }
@@ -3462,6 +3494,8 @@ namespace {
                                  : simulateOrbs(layer, p1, p2, dual, 0, down, horizon, releaseAfter, horizon, &end);
         buf.captureKiller = false;
         buf.trackMovers = false;
+        const int baseOrbs = buf.runOrbs;      // v2.90: orbs the ghost clicked for you in that run
+        const int baseHarmless = buf.runHarmless;  // v2.91: hazards it ignored as "you're touching it"
 
         // v2.30 diagnostics: a ghost that dies within a few ticks while you live means the
         // prediction doesn't match you there. Log what killed it and how both hitboxes compare.
@@ -3495,7 +3529,48 @@ namespace {
 
         // v2.36: with CBF, where inside the tick the click landed (0 = on the tick)
         std::string tickTag = midTick > 0.f ? fmt::format(" @{:.2f}", midTick) : std::string();
+        // The same judgement this mode's search uses, for a single delay.
+        auto scoreAt = [&](int k, int target, SimEnd* e) {
+            return cubeStyleWave ? waveScore(layer, p1, p2, dual, k, down, horizon, target, e)
+                 : robotPress    ? robotScore(layer, p1, p2, dual, k, horizon, target, e)
+                 : spiderPress   ? spiderScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e)
+                 : ballPress     ? ballScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e)
+                 : ufoPress      ? ufoScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e)
+                 : shipInput     ? shipScore(layer, p1, p2, dual, k, down, horizon, target, e)
+                                 : simulateOrbs(layer, p1, p2, dual, k, down, horizon, releaseAfter, target, e);
+        };
+
+        // v2.90: "safe now" has to hold up in a real run exactly like a save does (v2.28). A click
+        // that only survives at the exact predicted spot is a click that dies for real - that is
+        // why the mod kept calling clicks safe ("it thinks every click I do is safe") while you
+        // kept dying to them. If half a tick either way kills the ghost, this is not "safe now":
+        // fall through and search for a timing that does hold up. If no timing holds up better
+        // than your click, the click still goes through untouched (below).
+        bool fragilePass = false;
         if (base >= horizon) {
+            if (buf.robustSaves && !(anyWave && buf.waveV46) && clickMs() < buf.budgetMs) {
+                float shiftX = std::max(0.3f, 0.5f * (311.58f / 240.f) * (std::abs(p1->m_playerSpeed) / 0.9f));
+                auto holdsUp = [&](int k) {
+                    for (float off : { shiftX, -shiftX }) {
+                        buf.ghostShiftX = off;
+                        SimEnd e;
+                        int ret = scoreAt(k, horizon, &e);
+                        buf.ghostShiftX = 0.f;
+                        if (ret < horizon) {
+                            return false;
+                        }
+                    }
+                    return true;
+                };
+                if (!holdsUp(0)) {
+                    fragilePass = true;
+                    if (buf.explain) {
+                        say("safe now only at the exact spot (half a tick either way crashes before the {}t look-ahead) - searching", horizon);
+                    }
+                }
+            }
+        }
+        if (base >= horizon && !fragilePass) {
             // v2.43 more time at death spots. This input is only safe if your next input comes
             // in time, and level memory has seen you die here repeatedly: try small delays
             // that push the crash further away (or remove it), so you get more time to react.
@@ -3539,11 +3614,13 @@ namespace {
             }
             if (buf.explain) {
                 if (buf.baseEscape >= 0) {
-                    say("pass {}{}: safe only if you react by t{} (else crash at t{})", down ? "press" : "release", tickTag,
-                        buf.baseEscape, buf.baseCrash);
+                    say("pass {}{}: safe only if you react by t{} (else crash at t{}){}", down ? "press" : "release", tickTag,
+                        buf.baseEscape, buf.baseCrash, baseOrbs > 0 ? fmt::format(" - {} orb{} assumed clicked", baseOrbs, baseOrbs == 1 ? "" : "s") : "");
                 }
                 else {
-                    say("pass {}{}: safe now (survives the {}t look-ahead)", down ? "press" : "release", tickTag, horizon);
+                    say("pass {}{}: safe now (survives the {}t look-ahead{}{})", down ? "press" : "release", tickTag, horizon,
+                        baseOrbs > 0 ? fmt::format(", the ghost clicked {} orb{} for you", baseOrbs, baseOrbs == 1 ? "" : "s") : "",
+                        baseHarmless > 0 ? fmt::format(", ignoring {} hazard{} you are touching", baseHarmless, baseHarmless == 1 ? "" : "s") : "");
                 }
             }
             decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
@@ -3597,17 +3674,6 @@ namespace {
         crashFixed = false;
         // v2.13 memory: the delay that worked here on earlier runs is tried first, so the
         // same gap gets the same save every time.
-        // The same judgement this mode's search uses, for a single delay.
-        auto scoreAt = [&](int k, int target, SimEnd* e) {
-            return cubeStyleWave ? waveScore(layer, p1, p2, dual, k, down, horizon, target, e)
-                 : robotPress    ? robotScore(layer, p1, p2, dual, k, horizon, target, e)
-                 : spiderPress   ? spiderScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e)
-                 : ballPress     ? ballScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e)
-                 : ufoPress      ? ufoScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e)
-                 : shipInput     ? shipScore(layer, p1, p2, dual, k, down, horizon, target, e)
-                                 : simulateOrbs(layer, p1, p2, dual, k, down, horizon, releaseAfter, target, e);
-        };
-
         // v2.69: a cube / ball jump save has to land safely. A save that only lived 12 ticks
         // longer than pressing now still crashed later in the same jump (Acheron's first jump:
         // +32t..+40t "saves" that died ~130 ticks later, every time); those clicks now go
@@ -3684,6 +3750,7 @@ namespace {
         // works at the exact spot, the next few delays are tried for one that survives all
         // three; if none does, the original save is kept, so this never makes things worse.
         bool robustNote = false;
+        bool chosenRobust = false;  // v2.90: the chosen delay survives half a tick either way
         if (buf.robustSaves && !(anyWave && buf.waveV46)) {
             // v2.88: a best-effort save is only required to survive its own prediction (its crash
             // is a later obstacle by definition), a full save still has to clear the look-ahead.
@@ -3702,7 +3769,8 @@ namespace {
                 }
                 return true;
             };
-            if (clickMs() < buf.budgetMs && !robust(saved)) {
+            chosenRobust = clickMs() < buf.budgetMs && robust(saved);
+            if (!chosenRobust && clickMs() < buf.budgetMs) {
                 for (int k = saved + 1; k <= std::min(maxDelay, saved + st(3)); ++k) {
                     SimEnd e;
                     int ret = scoreAt(k, target, &e);
@@ -3710,10 +3778,21 @@ namespace {
                         saved = k;
                         landed = ret;
                         robustNote = true;
+                        chosenRobust = true;
                         break;
                     }
                 }
             }
+        }
+        if (fragilePass && !chosenRobust) {
+            // v2.90: your click already worked at the exact predicted spot and no delay holds up
+            // better, so leave it alone instead of moving a working click for nothing.
+            if (buf.explain) {
+                say("pass {}{}: no delay holds up better than the click you made", down ? "press" : "release", tickTag);
+            }
+            decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
+            buf.appliedInput = down;
+            return false;
         }
 
         if (buf.avoidMovers) {
@@ -4910,7 +4989,7 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
                     }
                     if (buf.simTick <= 1) {
                         auto const& r = object->getObjectRect();
-                        if (r.intersectsRect(buf.realRect1) || r.intersectsRect(buf.realRect2)) {
+                        if (r.intersectsRect(buf.coreRect1) || r.intersectsRect(buf.coreRect2)) {
                             buf.harmless.insert(object);
                             continue;
                         }
