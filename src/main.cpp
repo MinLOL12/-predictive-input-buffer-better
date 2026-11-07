@@ -2020,9 +2020,14 @@ namespace {
                     // "ORB timing" show up right before a death ("sometimes it works, mostly it
                     // doesn't"). Moving an early press onto the orb only has to not die sooner
                     // than missing it would.
-                    bool good = retimingOrb ? ret >= now + st(ORB_RETIME_MARGIN)
+                    // v2.88: "not a real save" does not have to mean "no click at all". A retime
+                    // that only dies to the NEXT obstacle is still worth taking (the same
+                    // late-crash rule the main search uses) instead of leaving the click exactly
+                    // where it kills you.
+                    bool lateOK = retimingOrb && buf.lateCrash > 0 && ret >= st(buf.lateCrash) && ret >= now + st(12);
+                    bool good = retimingOrb ? (ret >= now + st(ORB_RETIME_MARGIN) || lateOK)
                                             : ret >= std::min(now, horizon);
-                    if (!uses || !good || ((fullOnly || k > legacyAlignEnd) && ret < horizon)) {
+                    if (!uses || !good || (!lateOK && (fullOnly || k > legacyAlignEnd) && ret < horizon)) {
                         continue;
                     }
                     if (ret > bestRet) {
@@ -2036,12 +2041,12 @@ namespace {
                     *landed = horizon;
                 }
                 if (retimingOrb && found > 0) {
-                    // v2.87: a re-timed orb click has to work in a real run too, not only at the
-                    // exact predicted spot. With "Robust saves" on, the tick must also survive
-                    // with the ghost half a tick ahead of and half a tick behind you: the middle
-                    // of a fully-safe window is tried first, then the rest of that window. If
-                    // none of them is robust the click is left untouched instead of claiming a
-                    // save that dies (the budget can also cut this short).
+                    // v2.87/v2.88: a re-timed orb click should work in a real run too, not only at
+                    // the exact predicted spot. With "Robust saves" on, the tick is first tested
+                    // with the ghost half a tick ahead of and behind you: the middle of a fully-safe
+                    // window is tried, then the rest of that window, then the next few delays. When
+                    // none of them is robust the best pick is still used (and the log says
+                    // "fragile") - refusing to click at all was the worse outcome.
                     float shift = std::max(0.3f, 0.5f * (311.58f / 240.f) * (std::abs(p1->m_playerSpeed) / 0.9f));
                     auto robustTick = [&](int k, int need) {
                         for (float off : { shift, -shift }) {
@@ -2056,26 +2061,35 @@ namespace {
                         }
                         return true;
                     };
-                    int need = *landed >= horizon ? horizon : now + st(ORB_RETIME_MARGIN);
-                    bool ok = buf.robustSaves ? (clickMs() < buf.budgetMs && robustTick(found, need)) : (*landed >= horizon);
-                    if (!ok && safeStart >= 0) {
+                    int need = *landed;
+                    if (buf.robustSaves && clickMs() < buf.budgetMs && !robustTick(found, need)) {
                         int pick = 0;
-                        for (int k = safeStart; k <= std::min(safeEnd, endK); ++k) {
+                        if (safeStart >= 0) {
+                            for (int k = safeStart; k <= std::min(safeEnd, endK); ++k) {
+                                if (clickMs() > buf.budgetMs) {
+                                    break;
+                                }
+                                if (k != found && robustTick(k, horizon)) {
+                                    pick = k;
+                                    *landed = horizon;
+                                    break;
+                                }
+                            }
+                        }
+                        for (int k = found + 1; pick == 0 && k <= std::min(endK, found + st(3)); ++k) {
                             if (clickMs() > buf.budgetMs) {
                                 break;
                             }
-                            if (k != found && robustTick(k, horizon)) {
+                            if (robustTick(k, need)) {
                                 pick = k;
-                                break;
                             }
                         }
-                        found = pick;
-                        if (found > 0) {
-                            *landed = horizon;
+                        if (pick > 0) {
+                            found = pick;
                         }
-                    }
-                    if (buf.explain) {
-                        trace += found > 0 ? " robust" : " not robust";
+                        else if (buf.explain) {
+                            trace += " fragile";
+                        }
                     }
                 }
                 else if (!retimingOrb && found == 0 && fallbackK > 0) {
@@ -3568,6 +3582,7 @@ namespace {
         int landed = 0;
         int saved = 0;
         bool fromMemory = false;
+        bool lateSave = false;  // v2.88: best-effort save whose predicted crash is a later obstacle
         crashFixed = false;
         // v2.13 memory: the delay that worked here on earlier runs is tried first, so the
         // same gap gets the same save every time.
@@ -3624,6 +3639,25 @@ namespace {
                                   : searchDelay(layer, p1, p2, dual, down, anyWave, horizon, maxDelay, releaseAfter, base, &landed,
                                         groundPress || robotRelease || dashRelease);
         }
+        // v2.88: not everything has to survive the whole look-ahead to be worth clicking. When no
+        // delay clears it, a click still helps if the crash it leaves is the NEXT obstacle rather
+        // than this click's fault: it has to buy at least 3 frames over pressing now and the crash
+        // has to be at least 'cube-late-crash' ticks away (90t = 0.375 s by default - same rule that
+        // already excuses late crashes for passes). Before, the mod said "no save" and left the
+        // input alone while there was a click that kept you alive, which is the worst outcome of
+        // the two. Wave keeps its own rules, and 0 in that setting turns this off.
+        if (saved <= 0 && !anyWave && !cubeStyleWave && buf.lateCrash > 0 && dbgBestK > 0 && dbgBestRet > 0) {
+            int crashAt = dbgBestK + dbgBestRet;
+            if (dbgBestRet >= st(buf.lateCrash) && crashAt >= base + st(12)) {
+                saved = dbgBestK;
+                landed = dbgBestRet;
+                lateSave = true;
+                if (buf.explain) {
+                    say("late save: nothing clears the {}t look-ahead, +{}t survives {}t and crashes at t{} ({}t later than pressing now, past "
+                        "the {}t late-crash line)", horizon, saved, landed, crashAt, crashAt - base, st(buf.lateCrash));
+                }
+            }
+        }
         if (saved <= 0) {
             say("no save: {}{} dies in {}t (max {}t, best +{}t -> {}t of {}){}", down ? "press" : "release", tickTag, base, maxDelay,
                 dbgBestK, dbgBestRet, horizon, !crashFixed ? "" : base < st(30) ? " - too late: waiting only makes it crash sooner" : " - same crash at any timing (next obstacle)");
@@ -3640,7 +3674,9 @@ namespace {
         // three; if none does, the original save is kept, so this never makes things worse.
         bool robustNote = false;
         if (buf.robustSaves && !(anyWave && buf.waveV46)) {
-            int target = needed;
+            // v2.88: a best-effort save is only required to survive its own prediction (its crash
+            // is a later obstacle by definition), a full save still has to clear the look-ahead.
+            int target = lateSave ? landed : needed;
             // half a tick of x movement: normal speed (0.9) covers 311.58 units a second
             float shift = std::max(0.3f, 0.5f * (311.58f / 240.f) * (std::abs(p1->m_playerSpeed) / 0.9f));
             auto robust = [&](int k) {
@@ -3693,7 +3729,8 @@ namespace {
         }
         noteSave(layer, saved);
         say("SAVED {}{} +{}t ({:g}f)  {}->{}  [max {}]{}", down ? "press" : "release", tickTag, saved, saved * TICK, base, landed, maxDelay,
-            robustNote ? std::string("  (robust)")
+            lateSave ? fmt::format("  (best effort, crash t{})", landed)
+            : robustNote ? std::string("  (robust)")
             : fromMemory ? std::string("  (memory)")
             : cubeStyleWave && marginUsed ? std::string("  +margin")
             : robotPress ? fmt::format("  hold {}t", robotUsedHold) : std::string());
