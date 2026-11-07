@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.89.0",
+	"version": "v2.90.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -202,7 +202,7 @@
 		"orb-timing": {
 			"type": "bool",
 			"name": "Orb timing",
-			"description": "For frame-perfect orbs, retry timings while passing through the same orb. v2.86/v2.87/v2.88: this covers the click that actually hits an orb. A press made while already inside an orb used to be passed to the game unchanged, so this setting could never change a real orb click. Now, if that click does not survive the look-ahead, every tick of the pass through the same orb is tried: the tick has to clear the look-ahead (or, with 'cube-late-crash' on, only push the crash past that setting and at least 3 frames further out), it never sits on the last tick you are still touching the orb on, and with 'Robust saves' on it is also checked half a tick ahead of and behind you - the middle of the safe window first, then the rest of it, then the next few delays. If the only candidate is fragile it is still used (the log says 'fragile'), and if nothing at all qualifies your click is passed through untouched. Needs 'Orb alignment' and 'Orb / pad / portal prediction'.",
+			"description": "For frame-perfect orbs, retry timings while passing through the same orb. v2.86-v2.90: this covers the click that actually hits an orb. A press made while already inside an orb used to be passed to the game unchanged, so this setting could never change a real orb click. Now a press inside an orb counts as safe only if it also survives with you half a tick ahead of and behind (see 'Robust saves'): an orb click that only works at the exact predicted spot is the usual reason a click reads safe and still kills you. Otherwise every tick of the pass through the same orb is tried - it has to clear the look-ahead (or, with 'cube-late-crash' on, push the crash past that setting and at least 3 frames further out), it never sits on the last tick you are still touching the orb on, and the most robust tick wins (middle of the safe window first). If nothing qualifies your click is passed through untouched. Needs 'Orb alignment' and 'Orb / pad / portal prediction'.",
 			"default": true
 		},
 		"cube-late-crash": {
@@ -222,7 +222,7 @@
 		"robust-saves": {
 			"type": "bool",
 			"name": "Robust saves",
-			"description": "Before a save is used, it is also tested with you slightly ahead of and behind your real position (about half a tick). Saves that only work at the exact spot are swapped for a nearby delay that survives all three, if there is one. Costs a few extra predictions per save, never per normal click.",
+			"description": "Before a save is used, it is also tested with you slightly ahead of and behind your real position (about half a tick). Saves that only work at the exact spot are swapped for a nearby delay that survives all three, if there is one. v2.90: the same test now also decides whether an input is 'safe as it is' - before, a click that only survived at the exact predicted spot was passed through as safe and then killed you for real. If your click only works at the exact spot the search runs; if no delay holds up better than your click, the click still goes through untouched. Costs a few extra predictions per click, not per normal click when nothing is borderline.",
 			"default": true
 		},
 		"ignore-touching-hazards": {
