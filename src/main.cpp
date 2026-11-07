@@ -533,13 +533,13 @@ namespace {
         buf.waveMargin = mod->getSettingValue<bool>("wave-safety-margin") && !buf.lowLatency;
         buf.orbWindow = static_cast<int>(mod->getSettingValue<int64_t>("orb-align-ticks"));
         // v2.71 performance mode: for PCs that drop frames on clicks. Shorter searches, no
-        // extra robustness runs, orbs clicked only the normal way (no late-click retries), and
-        // the debug runs (drift check, live path view) off.
+        // extra robustness runs off, and the debug runs (drift check, live path view) off.
+        // v2.86: performance mode no longer switches orb timing off behind your back - the
+        // setting said "on", so orb clicks were re-timed never and the setting looked dead.
         buf.perfMode = mod->getSettingValue<bool>("performance-mode");
         if (buf.perfMode) {
             buf.budgetMs = std::min(buf.budgetMs, 4.0);
             buf.robustSaves = false;
-            buf.orbTiming = false;
             buf.driftCheck = false;
         }
         buf.userBudget = buf.budgetMs;
@@ -1941,10 +1941,19 @@ namespace {
             bool nowUses = buf.orbUsedTick >= 0;
             // If the player's actual timing already activates an orb, never change
             // that decision just because a prediction dislikes the resulting path.
+            // v2.86: with "Orb timing" on, a press inside the orb whose path does NOT
+            // survive the look-ahead is re-timed tick by tick inside the same orb below
+            // (before, this returned here, so orb timing never ran for a real orb click).
+            // A click that is already fully safe is always left exactly where it is.
+            bool retimingOrb = false;
             if (nowUses) {
-                originalOrbUsed = true;
-                buf.orbClick = buf.assumeOrbs;
-                return 0;
+                if (!buf.orbTiming || now >= horizon) {
+                    originalOrbUsed = true;
+                    buf.orbClick = buf.assumeOrbs;
+                    return 0;
+                }
+                retimingOrb = true;
+                buf.orbWasTiming = true;
             }
             // Learned timings are valid only for the specific first orb ahead.
             if (targetOrb && learned > 0 && learned <= window) {
@@ -1993,7 +2002,11 @@ namespace {
                     else {
                         runStart = -1;
                     }
-                    if (!uses || ret < std::min(now, horizon) || ((fullOnly || k > legacyAlignEnd) && ret < horizon)) {
+                    // Re-timing a press that already used the orb must actually gain ticks
+                    // (a tie would move a working click for nothing); moving an early press
+                    // onto the orb only has to not die sooner than missing it would.
+                    bool beatsNow = retimingOrb ? ret > now : ret >= std::min(now, horizon);
+                    if (!uses || !beatsNow || ((fullOnly || k > legacyAlignEnd) && ret < horizon)) {
                         continue;
                     }
                     if (ret > bestRet) {
@@ -2006,7 +2019,10 @@ namespace {
                     found = (safeStart + safeEnd) / 2;
                     *landed = horizon;
                 }
-                else if (found == 0 && fallbackK > 0) {
+                else if (found == 0 && fallbackK > 0 && (!retimingOrb || fallbackRet > now)) {
+                    // v2.86: a fallback may keep an early press on the orb even when no path is
+                    // safe, but it must never move a click that already used the orb to a
+                    // timing that dies sooner.
                     found = fallbackK;
                     *landed = fallbackRet;
                 }
@@ -3098,7 +3114,15 @@ namespace {
         // to a different orb. Pending input sequences must stay ordered, however.
         bool touchingOrb = (p1->m_touchingRings && p1->m_touchingRings->count() > 0) ||
             (p2 && p2->m_touchingRings && p2->m_touchingRings->count() > 0);
-        if (prediction_policy::passOrbPress(down, touchingOrb, buf.queue.empty())) {
+        // v2.86: "Orb timing" used to do nothing at all for the clicks that actually hit
+        // an orb: a press made inside an orb was always passed straight to the game, so
+        // neither the window nor the timing setting could change an orb click. With orb
+        // timing on, that press now goes through alignOrb like any other and is only moved
+        // when a tick inside the same orb lives longer (see the fallback below).
+        bool orbRetime = down && touchingOrb && buf.queue.empty() && buf.smart && buf.orbAlign && buf.orbTiming &&
+            !p1->m_isDart && !(p2 && p2->m_isDart) && !p1->m_isShip && !(p2 && p2->m_isShip) &&
+            (p1->m_isOnGround && (!p2 || p2->m_isOnGround) ? buf.orbAlignGround : true);
+        if (prediction_policy::passOrbPress(down, touchingOrb, buf.queue.empty(), orbRetime)) {
             buf.appliedInput = true;
             if (buf.explain) {
                 say("pass press: touching an orb (player's timing)");
@@ -3307,6 +3331,15 @@ namespace {
                 buf.shift = k;
                 queueInput(k - early, down);
                 return true;
+            }
+            if (orbRetime) {
+                // v2.86: no tick inside the orb beats the click you just made, so the press
+                // reaches the game exactly as before (your timing, no safety veto).
+                buf.appliedInput = down;
+                if (buf.explain) {
+                    say("orb timing: your click is already the best tick inside the orb");
+                }
+                return false;
             }
         }
 
