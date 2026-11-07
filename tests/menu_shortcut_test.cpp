@@ -3,12 +3,12 @@
 
 int main() {
     using menu_shortcut::shouldOpen;
-    // Both left and right Alt are represented by the event's Alt modifier.
-    assert(shouldOpen(true, true, false, true, true));
-    // Bare F10 remains available to the path-view handler.
-    assert(!shouldOpen(true, true, false, false, true));
-    assert(!shouldOpen(false, true, false, true, true));
-    assert(!shouldOpen(true, false, false, true, true));
-    assert(!shouldOpen(true, true, true, true, true));
-    assert(!shouldOpen(true, true, false, true, false));
+    // v2.85: plain F3 opens the menu while in a level (no modifier needed any more).
+    assert(shouldOpen(true, true, false, true));
+    // F3 is the menu key on its own, and the other shortcuts keep working.
+    assert(!shouldOpen(false, true, false, true));
+    assert(!shouldOpen(true, false, false, true));
+    assert(!shouldOpen(true, true, true, true));
+    // Nothing to open outside a level.
+    assert(!shouldOpen(true, true, false, false));
 }
