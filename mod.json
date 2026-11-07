@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.87.0",
+	"version": "v2.88.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -202,13 +202,13 @@
 		"orb-timing": {
 			"type": "bool",
 			"name": "Orb timing",
-			"description": "For frame-perfect orbs, retry timings while passing through the same orb. v2.86/v2.87: this covers the click that actually hits an orb. A press made while already inside an orb used to be passed to the game unchanged, so this setting could never change a real orb click. Now, if that click does not survive the look-ahead, every tick of the pass through the same orb is tried. Only a save that is expected to hold up is used: it must survive the whole look-ahead, never sit on the last tick you are still touching the orb on (a fraction of a tick of prediction error would put the press outside the orb), and, with 'Robust saves' on, it must also survive with you half a tick ahead of and half a tick behind - otherwise the next tick in the safe window is tried, and if none qualifies your click is passed through untouched. That is why an 'ORB timing' line in the console now means the retime is expected to save you. Needs 'Orb alignment' and 'Orb / pad / portal prediction'.",
+			"description": "For frame-perfect orbs, retry timings while passing through the same orb. v2.86/v2.87/v2.88: this covers the click that actually hits an orb. A press made while already inside an orb used to be passed to the game unchanged, so this setting could never change a real orb click. Now, if that click does not survive the look-ahead, every tick of the pass through the same orb is tried: the tick has to clear the look-ahead (or, with 'cube-late-crash' on, only push the crash past that setting and at least 3 frames further out), it never sits on the last tick you are still touching the orb on, and with 'Robust saves' on it is also checked half a tick ahead of and behind you - the middle of the safe window first, then the rest of it, then the next few delays. If the only candidate is fragile it is still used (the log says 'fragile'), and if nothing at all qualifies your click is passed through untouched. Needs 'Orb alignment' and 'Orb / pad / portal prediction'.",
 			"default": true
 		},
 		"cube-late-crash": {
 			"type": "int",
 			"name": "Cube: ignore crashes after (ticks)",
-			"description": "If pressing now only crashes long after the jump landed, the crash may be the next obstacle's, not this click's. The search is skipped only when the time between landing and crashing is at least your whole buffer (F6 stage) - then no delay you allow could still be in the air at the crash. With a big / unlimited buffer, very early clicks (jump lands, then runs into the spike you meant to jump) are searched and saved. 90 ticks = about 0.37 s. 0 = always search.",
+			"description": "If pressing now only crashes long after the jump landed, the crash may be the next obstacle's, not this click's. The search is skipped only when the time between landing and crashing is at least your whole buffer (F6 stage) - then no delay you allow could still be in the air at the crash. With a big / unlimited buffer, very early clicks (jump lands, then runs into the spike you meant to jump) are searched and saved. v2.88: this distance is also the line for best-effort saves - when no delay survives the whole look-ahead, the delay that lives longest is still used if its crash is at least this far away and it buys you at least 3 frames over pressing now (the console shows 'best effort, crash tN'). 90 ticks = about 0.37 s. 0 = always search, and no best-effort saves.",
 			"default": 90,
 			"min": 0,
 			"max": 240
