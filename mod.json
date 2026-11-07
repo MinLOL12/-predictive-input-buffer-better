@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.84.0",
+	"version": "v2.85.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -138,12 +138,6 @@
 			"name": "Wave: safety margin",
 			"description": "When a wave save is found, use a delay with one tick of room on both sides instead of the one that only just clears the spike, so tiny differences in the real run can't clip it. Can add 1 tick (0.25f) to some saves.",
 			"default": true
-		},
-		"show-path": {
-			"type": "bool",
-			"name": "Path view on at start",
-			"description": "Draw the predicted path in the level after each input (toggle any time with F10). Red = what the input would do right now, green = what the game actually gets, white dot = where a delayed input fires, red dot = crash. Costs two extra predictions per click while on.",
-			"default": false
 		},
 		"orb-align-ground": {
 			"type": "bool",

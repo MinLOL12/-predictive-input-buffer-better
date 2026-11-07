@@ -21,6 +21,7 @@
 #include "wave_rescue_policy.hpp"
 #include "menu_shortcut.hpp"
 #include <Geode/Geode.hpp>
+#include <Geode/modify/CCCircleWave.hpp>
 #include <Geode/modify/CCKeyboardDispatcher.hpp>
 #include <Geode/modify/EffectGameObject.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
@@ -33,6 +34,7 @@
 #include <Geode/ui/Popup.hpp>
 #include <map>
 #include <Geode/modify/PlayerObject.hpp>
+#include <Geode/modify/RingObject.hpp>
 #include <Windows.h>
 #include <algorithm>
 #include <chrono>
@@ -153,6 +155,16 @@ namespace {
         bool activated;
         bool byP1;
         bool byP2;
+        // v2.85: an orb / dash orb has visual state of its own (the "claimed" flag, a ring the
+        // ghost grows while it predicts a dash). The ghost runs the real activation code, so
+        // that state has to be put back exactly like the activation flags above.
+        RingObject* ring;
+        bool claimTouch;
+        float scaleX;
+        float scaleY;
+        float rScaleX;   // the ring's own radius scale: this is what a dash orb grows while it is used
+        float rScaleY;
+        unsigned char opacity;
     };
 
     struct Buffer {
@@ -280,7 +292,7 @@ namespace {
         bool robotSmart = true;      // v2.12: alternate reachable hold lengths can make a robot press safe
         bool robotAutoRelease = false;  // v2.12: robot auto-release (practice mode only)
         bool autoNormalRuns = false; // v2.14: let auto-release work outside practice too
-        bool usedThisAttempt = false;      // the buffer was on at some point of this attempt (end-screen stats)
+        bool usedThisAttempt = false;      // the buffer was on at some point of this attempt
         bool learn = true;           // v2.13: per-level memory learned from your runs
         bool fullState = true;       // v2.11.1: copy the full v2.8 player state into the ghost
         int orbWindow = 16;          // v2.6: how far ahead (ticks) an orb may be for that
@@ -1355,18 +1367,48 @@ namespace {
             return;
         }
         buf.simUsed.insert(object);
-        ObjSnapshot s { object, object->m_isActivated, nullptr, false, false, false };
+        ObjSnapshot s { object, object->m_isActivated, nullptr, false, false, false, nullptr, false, 0.f, 0.f, 0.f, 0.f, 0 };
         if (auto* effect = typeinfo_cast<EffectGameObject*>(object)) {
             s.effect = effect;
             s.activated = effect->m_activated;
             s.byP1 = effect->m_activatedByPlayer1;
             s.byP2 = effect->m_activatedByPlayer2;
         }
+        if (auto* ring = typeinfo_cast<RingObject*>(object)) {
+            s.ring = ring;
+            s.claimTouch = ring->m_claimTouch;
+            s.scaleX = ring->getScaleX();
+            s.scaleY = ring->getScaleY();
+            s.rScaleX = ring->getRScaleX();
+            s.rScaleY = ring->getRScaleY();
+            s.opacity = ring->getOpacity();
+        }
         buf.snapshots.push_back(s);
     }
 
     void restoreObjects() {
         for (auto const& s : buf.snapshots) {
+            if (s.ring) {
+                // v2.85: a predicted dash left the real dash orb claimed and its ring grown to
+                // the "being dashing" size for good - that is the huge ring around dash orbs.
+                // The ghost's activation is only a guess, so put every bit of it back.
+                s.ring->m_claimTouch = s.claimTouch;
+                if (std::abs(s.scaleX - s.scaleY) < 1e-4f) {
+                    s.ring->setScale(s.scaleX);
+                }
+                else {
+                    s.ring->setScaleX(s.scaleX);
+                    s.ring->setScaleY(s.scaleY);
+                }
+                if (std::abs(s.rScaleX - s.rScaleY) < 1e-4f) {
+                    s.ring->setRScale(s.rScaleX);
+                }
+                else {
+                    s.ring->setRScaleX(s.rScaleX);
+                    s.ring->setRScaleY(s.rScaleY);
+                }
+                s.ring->setOpacity(s.opacity);
+            }
             s.object->m_isActivated = s.isActivated;
             if (s.effect) {
                 s.effect->m_activated = s.activated;
@@ -3692,7 +3734,7 @@ namespace {
     }
 }
 
-// In-game menu: Alt+F10 in a level. Stage, the main switches,
+// In-game menu: F3 in a level. Stage, the main switches,
 // status, and shortcuts to all settings / copy log / forget level.
 class BufferMenu : public geode::Popup {
     struct Option {
@@ -4027,23 +4069,11 @@ public:
 };
 
 // Level complete: keep the attempt stats / run-check bookkeeping, without the old
-// "was on" end-screen watermark.
+// "was on" end-screen watermark (and, since v2.85, without the "N saves" line either:
+// a finished level shows nothing but the game's own screen).
 class $modify(BufEndLevelLayer, EndLevelLayer) {
     void customSetup() {
         EndLevelLayer::customSetup();
-        if (!buf.usedThisAttempt) {
-            return;
-        }
-        auto win = CCDirector::get()->getWinSize();
-        if (attemptStats.saves > 0) {
-            auto* stats = CCLabelBMFont::create(attemptSummary().c_str(), "bigFont.fnt");
-            stats->setScale(0.28f);
-            stats->setColor({ 255, 190, 225 });
-            stats->setOpacity(170);
-            stats->setAnchorPoint({ 1.f, 1.f });
-            stats->setPosition({ win.width - 6.f, win.height - 4.f });
-            this->addChild(stats, 100);
-        }
         benchFinish();  // a completed run is the best recording there is
         benchFlush();
         endAttempt();
@@ -4052,7 +4082,9 @@ class $modify(BufEndLevelLayer, EndLevelLayer) {
 
 $on_mod(Loaded) {
     buf.console = Mod::get()->getSettingValue<bool>("debug-console");
-    buf.showPath = Mod::get()->getSettingValue<bool>("show-path");
+    // v2.85: the path view never turns itself on when the game starts. It is a per-session
+    // debug view now: F10 (or the menu switch) turns it on, and a fresh GD starts with it off.
+    buf.showPath = false;
     recoverGlobals();
     // v2.78: the 16f / 32f / UNLIMITED stages moved CUSTOM (6 -> 8) and OFF (7 -> 10)
     if (!Mod::get()->getSavedValue<bool>("stage-v278", false)) {
@@ -4094,7 +4126,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.77 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.85 loaded. F3 opens the menu, F6 cycles the stage, F10 shows the path");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -4241,7 +4273,7 @@ class $modify(BufPlayLayer, PlayLayer) {
             buf.panelLines.push_back(line);
         }
 
-        auto* hint = CCLabelBMFont::create("F6 stage  Alt+F10 menu  F8 copy log  F9 console  F10 path  F11 forget", "chatFont.fnt");
+        auto* hint = CCLabelBMFont::create("F6 stage  F3 menu  F8 copy log  F9 console  F10 path  F11 forget", "chatFont.fnt");
         hint->setScale(0.45f);
         hint->setColor({ 160, 190, 255 });
         hint->setAnchorPoint({ 0.5f, 0.5f });
@@ -4367,6 +4399,33 @@ class $modify(BufGameObject, GameObject) {
             return;
         }
         GameObject::playShineEffect();
+    }
+};
+
+// v2.85: orbs, pads and dash orbs spawn a ring when they are used. The hidden predictions use
+// them constantly (at a few hundred clicks a second that is hundreds of rings piling up on the
+// same orb, and a dash orb that looks like one huge ring), so a ring the ghost activates no
+// longer draws anything: only rings you actually hit show their effect.
+class $modify(BufRingObject, RingObject) {
+    void spawnCircle() {
+        if (buf.simulating) {
+            return;
+        }
+        RingObject::spawnCircle();
+    }
+};
+
+// v2.85: same for the circle waves (dash orbs, portals, pad effects). They are purely visual,
+// so the prediction keeps them but hides them; the wave still finishes and removes itself.
+class $modify(BufCircleWave, CCCircleWave) {
+    bool init(float startRadius, float endRadius, float duration, bool fadeIn, bool easeOut) {
+        if (!CCCircleWave::init(startRadius, endRadius, duration, fadeIn, easeOut)) {
+            return false;
+        }
+        if (buf.simulating) {
+            this->setVisible(false);
+        }
+        return true;
     }
 };
 
@@ -4566,10 +4625,9 @@ class $modify(BufPlayerObject, PlayerObject) {
 class $modify(BufKeyboard, CCKeyboardDispatcher) {
     bool dispatchKeyboardMSG(enumKeyCodes key, bool isKeyDown, bool isKeyRepeat, double timestamp) {
         auto* layer = GameManager::get()->m_playLayer;
-        // Geode dispatches queued raw-input events; GetKeyState can reflect a different
-        // Windows message (or a later physical state). The dispatcher has the modifier
-        // snapshot for this exact event, including either Alt key.
-        if (menu_shortcut::shouldOpen(key == KEY_F10, isKeyDown, isKeyRepeat, getAltKeyPressed(), layer != nullptr)) {
+        // v2.85: the menu opens with plain F3 (it used to need Alt+F10). F10 stays the
+        // path-view toggle, so the two never collide.
+        if (menu_shortcut::shouldOpen(key == KEY_F3, isKeyDown, isKeyRepeat, layer != nullptr)) {
             if (!layer->m_isPaused) {
                 layer->pauseGame(true);
             }
