@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.85.0",
+	"version": "v2.86.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -116,13 +116,13 @@
 		"orb-align": {
 			"type": "bool",
 			"name": "Orb alignment",
-			"description": "If an airborne press misses the first orb ahead, hold it until that same orb can be activated. Fully safe timings are preferred, but an orb-activating timing can be used even if no safe path is predicted. Presses already touching an orb pass through unchanged. Works for every mode except ship and wave. Needs 'Orb / pad / portal prediction' on.",
+			"description": "If an airborne press misses the first orb ahead, hold it until that same orb can be activated. Fully safe timings are preferred, but an orb-activating timing can be used even if no safe path is predicted. A press already touching an orb passes through unchanged, unless 'Orb timing' is on and another tick inside that orb survives longer. Works for every mode except ship and wave. Needs 'Orb / pad / portal prediction'.",
 			"default": true
 		},
 		"orb-align-ticks": {
 			"type": "int",
 			"name": "Orb alignment: max delay (ticks)",
-			"description": "How early a press may be and still be moved onto the orb - and how far into the orb an already-inside press may be re-timed. Every tick while you pass through the orb is tried and the middle of the safe click window is used, which is what makes frame-perfect orbs much easier. No frame cap. 32 ticks = 8 frames at 60fps, 240 ticks = 1 second.",
+			"description": "How early a press may be and still be moved onto the orb - and how far into the orb an already-inside press may be re-timed. Every tick while you pass through the orb is tried and the middle of the safe click window is used, which is what makes frame-perfect orbs much easier. No frame cap. 32 ticks = 8 frames at 60fps, 60 ticks = 15 frames. Bigger values also need a bigger 'Prediction time budget'.",
 			"default": 32,
 			"min": 1,
 			"max": 24000
@@ -202,7 +202,7 @@
 		"orb-timing": {
 			"type": "bool",
 			"name": "Orb timing",
-			"description": "For frame-perfect orbs, retry timings while passing through the same orb and prefer the middle of a fully-safe window. A press already touching an orb is passed through unchanged. Predictions of later orbs in a chain also try later clicks while enough time budget remains.",
+			"description": "For frame-perfect orbs, retry timings while passing through the same orb and prefer the middle of a fully-safe window. v2.86: this now also covers the click that actually hits an orb. A press made while already inside an orb used to be passed to the game unchanged, so this setting could never change an orb click; now, if that click does not survive the look-ahead, every tick of the pass through the same orb is tried and a timing that lives strictly longer is used instead. A click that is already safe is never moved. Needs 'Orb alignment' and 'Orb / pad / portal prediction'. Predictions of later orbs in a chain also try later clicks while enough time budget remains.",
 			"default": true
 		},
 		"cube-late-crash": {
@@ -314,7 +314,7 @@
 		"performance-mode": {
 			"type": "bool",
 			"name": "Performance mode",
-			"description": "For PCs that drop frames when you click: predictions get at most 4 ms per click, no extra robustness checks, orbs are only tried with a normal click (no late-click retries), and the drift check and live path view are off. Saves can be a little less precise.",
+			"description": "For PCs that drop frames when you click: predictions get at most 4 ms per click, no extra robustness checks, and the drift check and live path view are off. Saves can be a little less precise. It no longer switches orb timing off (v2.86).",
 			"default": false
 		},
 		"auto-budget": {

@@ -5,9 +5,10 @@
 // Policy values are in physics ticks; callers convert 240 Hz constants with st().
 namespace prediction_policy {
     // Never reorder a pending input sequence. Otherwise let an intentional press on
-    // an orb reach the game unchanged, regardless of the predicted outcome.
-    constexpr bool passOrbPress(bool down, bool touchingOrb, bool queueEmpty) {
-        return down && touchingOrb && queueEmpty;
+    // an orb reach the game unchanged, regardless of the predicted outcome - unless
+    // "orb timing" is on and the press may be re-timed inside that same orb.
+    constexpr bool passOrbPress(bool down, bool touchingOrb, bool queueEmpty, bool retimeInOrb) {
+        return down && touchingOrb && queueEmpty && !retimeInOrb;
     }
 
     template <typename T>

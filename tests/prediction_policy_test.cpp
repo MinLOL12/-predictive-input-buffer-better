@@ -8,10 +8,12 @@ struct Player {
 
 int main() {
     using namespace prediction_policy;
-    assert(passOrbPress(true, true, true));
-    assert(!passOrbPress(false, true, true));
-    assert(!passOrbPress(true, false, true));
-    assert(!passOrbPress(true, true, false)); // keep pending inputs ordered
+    assert(passOrbPress(true, true, true, false));
+    assert(!passOrbPress(false, true, true, false));
+    assert(!passOrbPress(true, false, true, false));
+    assert(!passOrbPress(true, true, false, false)); // keep pending inputs ordered
+    // v2.86 "orb timing": a press inside an orb is re-timed instead of passed through.
+    assert(!passOrbPress(true, true, true, true));
     int orb1 = 1, orb2 = 2;
     assert(sameOrb(&orb1, &orb1));
     assert(!sameOrb(&orb1, &orb2));
