@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.91.0",
+	"version": "v2.93.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -142,7 +142,7 @@
 		"orb-align-ground": {
 			"type": "bool",
 			"name": "Orb alignment: also from the ground",
-			"description": "Off: presses made while standing on the ground are normal jumps and never get moved onto an orb. On: a ground jump made just before an orb can be turned into an orb hit.",
+			"description": "Off (default): a press made while standing on the ground is a normal jump. v2.93: if that jump is predicted to kill you, the press is held back until the ghost is inside the orb ahead instead - click an orb from a platform to fall or fly somewhere, and the mod no longer turns that click into a jump into whatever is in front of you (it only does this when the click actually fires the orb; a jump that works is never changed). On: ground presses are always tried against an orb first, even when the jump would be fine.",
 			"default": false
 		},
 		"full-ghost-state": {
@@ -202,7 +202,7 @@
 		"orb-timing": {
 			"type": "bool",
 			"name": "Orb timing",
-			"description": "For frame-perfect orbs, retry timings while passing through the same orb. v2.86-v2.90: this covers the click that actually hits an orb. A press made while already inside an orb used to be passed to the game unchanged, so this setting could never change a real orb click. Now a press inside an orb counts as safe only if it also survives with you half a tick ahead of and behind (see 'Robust saves'): an orb click that only works at the exact predicted spot is the usual reason a click reads safe and still kills you. Otherwise every tick of the pass through the same orb is tried - it has to clear the look-ahead (or, with 'cube-late-crash' on, push the crash past that setting and at least 3 frames further out), it never sits on the last tick you are still touching the orb on, and the most robust tick wins (middle of the safe window first). If nothing qualifies your click is passed through untouched. Needs 'Orb alignment' and 'Orb / pad / portal prediction'.",
+			"description": "For frame-perfect orbs, retry timings while passing through the same orb. v2.86-v2.92: this covers the click that actually hits an orb. A press made while already inside an orb used to be passed to the game unchanged, so this setting could never change a real orb click. Now a press inside an orb counts as safe only if it also survives with you half a tick ahead of and behind (see 'Robust saves'). Otherwise every tick of the pass through the same orb is tried: a tick that clears the look-ahead wins, and when your click does not clear it any tick that lives longer is used as well - before, all of those were rejected and the mod said 'your click beats the timing' even when your click was the one killing you. It never picks the last tick you are still touching the orb on, and the most robust tick wins. The console says which: 'ORB timing +3t: your click 12t -> 27t (clears the look-ahead)' or '... lives longer but still dies later'. If nothing inside the orb lives longer than your click, your click is passed through untouched. Needs 'Orb alignment' and 'Orb / pad / portal prediction'.",
 			"default": true
 		},
 		"cube-late-crash": {

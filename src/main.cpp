@@ -179,6 +179,7 @@ namespace {
     struct Buffer {
         PlayerObject* ghost1 = nullptr;
         PlayerObject* ghost2 = nullptr;
+        bool ghostMissingLogged = false;  // v2.92: warned about a missing ghost already
         CCLayer* ghostLayer = nullptr;
         unsigned ghostLayerBase = 0;  // v2.24: children the ghost layer has right after the ghosts are made
 
@@ -232,6 +233,7 @@ namespace {
         int orbClickDelay = 0;       // v2.26: ghost orb auto-clicks wait this many ticks into the orb
         int autoAt1 = -1, autoAt2 = -1;      // v2.26: tick a delayed orb auto-click fires (-1 none, -2 done)
         bool orbWasTiming = false;   // v2.26: the last orb save re-timed a press that was already in the orb
+        bool orbWasGround = false;   // v2.93: the last orb save moved a ground press (a jump) into an orb
         int orbNowRet = 0;           // v2.87: ticks the click you actually made survived (for the log)
 
         bool tryBothOrbs = true;     // v2.4: if a run touches an orb and dies, retry with the other orb choice
@@ -1498,7 +1500,13 @@ namespace {
         int stopAt, SimEnd* end) {
         *end = SimEnd::Ok;
         if (!buf.ghost1) {
-            return horizon;
+            // v2.92: a missing ghost used to count as "survives the whole look-ahead", so every
+            // click read safe and nothing was ever saved. Never claim a prediction we didn't run.
+            if (!buf.ghostMissingLogged) {
+                buf.ghostMissingLogged = true;
+                say("prediction ghost is missing - predictions are off (leave and re-enter the level)");
+            }
+            return 0;
         }
         buf.simulating = true;
         buf.ghostDied = false;
@@ -1571,6 +1579,7 @@ namespace {
         int survived = 0;
         int airTicks = 0;
         int groundTicks = 0;
+        int landedAt = -1;  // v2.92: tick the landing rule was satisfied (see below)
         int tick = 0;
         bool died = false;
         bool safe = false;
@@ -1723,8 +1732,17 @@ namespace {
                 continue;
             }
             if (groundTicks > st(ballRun ? 16 : 2)) {  // v2.81: ball 8 -> 16t of roll before a flip counts as safe
-                safe = true;
-                break;
+                // v2.92: landing does not instantly mean safe. The run used to break here, so a
+                // click that landed on / right next to a hazard counted as a save as soon as the
+                // ghost had a few grounded ticks - "it thinks every click I do is safe". Keep
+                // stepping a few frames past the landing so a death just after it still counts.
+                if (landedAt < 0) {
+                    landedAt = tick;
+                }
+                if (tick - landedAt >= st(LOOKAHEAD_TAIL)) {
+                    safe = true;
+                    break;
+                }
             }
             ++groundTicks;
         }
@@ -1936,13 +1954,15 @@ namespace {
     // Prefer a fully safe timing. For an early airborne press, fall back to an
     // activation of that same orb even if the predicted path later crashes.
     int alignOrb(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int horizon, int releaseAfter, int learned, int* landed,
-        bool fullOnly, bool preferOrb, bool& originalOrbUsed) {
+        bool fullOnly, bool preferOrb, bool groundPress, bool& originalOrbUsed) {
         originalOrbUsed = false;
+        buf.orbWasGround = false;
         int window = st(std::clamp(buf.orbWindow, 1, MAX_TICKS));
         int found = 0;
         SimEnd end;
         buf.orbClick = false;  // the press being tested is the orb click
         buf.orbWasTiming = false;
+        buf.orbWasGround = false;
 
         // 1. Cheap probe: without pressing, does the ghost reach an orb soon?
         buf.skipPress = true;
@@ -1966,12 +1986,16 @@ namespace {
         // Used both to decide whether the click you made is really safe - not just at the exact
         // predicted spot - and to pick a re-timed tick that is.
         float orbShift = std::max(0.3f, 0.5f * (311.58f / 240.f) * (std::abs(p1->m_playerSpeed) / 0.9f));
-        auto holdsUp = [&](int k, int need) {
+        // v2.92: `sameOrb` is only required when picking a re-timed tick. For "is the click you
+        // made safe", the shifted ghost is 0.6px away and may legitimately touch the orb a tick
+        // earlier or later - what matters is that it survives, not which orb it used. Requiring the
+        // same orb there made almost every click "fragile" and sent it down the re-time path.
+        auto holdsUp = [&](int k, int need, bool sameOrb = true) {
             for (float off : { orbShift, -orbShift }) {
                 buf.ghostShiftX = off;
                 SimEnd e;
                 int ret = simulate(layer, p1, p2, dual, k, true, horizon, releaseAfter, horizon, &e);
-                bool ok = ret >= need && prediction_policy::sameOrb(targetOrb, buf.usedOrb);
+                bool ok = ret >= need && (!sameOrb || prediction_policy::sameOrb(targetOrb, buf.usedOrb));
                 buf.ghostShiftX = 0.f;
                 if (!ok) {
                     return false;
@@ -2002,7 +2026,7 @@ namespace {
                 // for real - a fraction of a tick either way and the press lands outside the orb.
                 // That is why almost every orb click read "safe" and never got saved: re-time it
                 // like an unsafe click when it doesn't hold up.
-                if (nowSafe && buf.robustSaves && clickMs() < buf.budgetMs && !holdsUp(0, horizon)) {
+                if (nowSafe && buf.robustSaves && clickMs() < buf.budgetMs && !holdsUp(0, horizon, false)) {
                     nowSafe = false;
                     if (buf.explain) {
                         trace += " (safe only at the exact spot)";
@@ -2015,6 +2039,25 @@ namespace {
                 }
                 retimingOrb = true;
                 buf.orbWasTiming = true;
+            }
+            if (groundPress) {
+                // v2.93: on the ground a press is a JUMP, so an orb you mean to click never fires
+                // and you jump into whatever is in front of you (a wall of spikes). If that jump
+                // is a death, keep the press back until the ghost is inside the orb: then the
+                // click flips / boosts you and you fall or fly where you wanted to go.
+                if (nowUses || now >= horizon) {
+                    // your ground jump is fine (or the press already fires the orb): leave it.
+                    if (buf.explain && !nowUses) {
+                        trace += " (ground jump is safe)";
+                    }
+                    if (!nowUses) {
+                        buf.orbClick = buf.assumeOrbs;
+                        return 0;
+                    }
+                }
+                else {
+                    buf.orbWasGround = true;
+                }
             }
             // Learned timings are valid only for the specific first orb ahead.
             if (targetOrb && learned > 0 && learned <= window) {
@@ -2076,10 +2119,13 @@ namespace {
                     // that only dies to the NEXT obstacle is still worth taking (the same
                     // late-crash rule the main search uses) instead of leaving the click exactly
                     // where it kills you.
+                    // v2.92: when the click you made is a death, any tick inside the orb that lives
+                    // longer is an improvement - refusing them all meant the mod said "your click
+                    // beats the timing" and let a wrong click through untouched.
                     bool lateOK = retimingOrb && buf.lateCrash > 0 && ret >= st(buf.lateCrash) && ret >= now + st(12);
-                    bool good = retimingOrb ? (ret >= now + st(ORB_RETIME_MARGIN) || lateOK)
+                    bool good = retimingOrb ? (ret >= horizon || (now < horizon && ret > now) || lateOK)
                                             : ret >= std::min(now, horizon);
-                    if (!uses || !good || (!lateOK && (fullOnly || k > legacyAlignEnd) && ret < horizon)) {
+                    if (!uses || !good || (!retimingOrb && (fullOnly || k > legacyAlignEnd) && ret < horizon)) {
                         continue;
                     }
                     if (ret > bestRet) {
@@ -3399,23 +3445,13 @@ namespace {
             releaseAfter = anyRobot ? robotHold.pick(st(20), 50) : holdEstimate();
         }
 
-        // On the ground a press is a jump; only move it onto an orb if the setting says so.
+        // On the ground a press is a jump. v2.93: if that jump is a death, the press is moved into
+        // an orb ahead instead (alignOrb decides); "also from the ground" forces it even when the
+        // jump is fine.
         bool grounded = p1->m_isOnGround && (!p2 || p2->m_isOnGround);
-        if (buf.explain && down && grounded && !buf.orbAlignGround && !anyWave && !anyShip && buf.orbAlign && buf.smart) {
-            // v2.42: is there an orb right ahead that this ground jump could have been moved onto?
-            SimEnd probeEnd;
-            buf.skipPress = true;
-            buf.orbClick = false;
-            int window = st(std::clamp(buf.orbWindow, 1, MAX_TICKS));
-            simulate(layer, p1, p2, dual, 0, true, window + 2, -1, window + 2, &probeEnd);
-            buf.skipPress = false;
-            buf.orbClick = buf.assumeOrbs;
-            if (buf.firstOrbTick >= 0 && buf.firstOrbTick <= window) {
-                say("orb: you'd touch an orb at t{}, but this press is from the ground ('also from the ground' is off)",
-                    buf.firstOrbTick);
-            }
-        }
-        if (down && !anyWave && !anyShip && buf.orbAlign && buf.smart && (!grounded || buf.orbAlignGround)) {
+        // v2.93: grounded presses get here too - alignOrb itself checks whether the ground jump
+        // is a death first, so a press that jumps fine is never turned into an orb hit.
+        if (down && !anyWave && !anyShip && buf.orbAlign && buf.smart) {
             auto isCubeMode = [](PlayerObject* p) {
                 return p && !p->m_isShip && !p->m_isDart && !p->m_isBird && !p->m_isBall && !p->m_isRobot && !p->m_isSpider &&
                     !p->m_isSwing;
@@ -3428,7 +3464,8 @@ namespace {
             // press: the player may still want that orb despite a predicted death.
             int k = memorySaysSkip(sliceOf(p1)) && grounded
                 ? 0
-                : alignOrb(layer, p1, p2, dual, horizon, releaseAfter, memoryDelay(sliceOf(p1)), &orbLanded, fullOnlyAlign, !grounded, originalOrbUsed);
+                : alignOrb(layer, p1, p2, dual, horizon, releaseAfter, memoryDelay(sliceOf(p1)), &orbLanded, fullOnlyAlign, !grounded, grounded,
+                      originalOrbUsed);
             if (originalOrbUsed) {
                 buf.appliedInput = down;
                 return false;
@@ -3440,7 +3477,13 @@ namespace {
             }
             if (k > 0) {
                 if (buf.orbWasTiming) {
-                    say("ORB timing +{}t ({:g}f): your click {}t -> {}t", k, k * TICK, buf.orbNowRet, orbLanded);
+                    say("ORB timing +{}t ({:g}f): your click {}t -> {}t{}", k, k * TICK, buf.orbNowRet, orbLanded,
+                        orbLanded >= horizon ? std::string(" (clears the look-ahead)")
+                                             : fmt::format(" (your click dies at {}t, this one lives longer but still dies later)", buf.orbNowRet));
+                }
+                else if (buf.orbWasGround) {
+                    say("ORB press +{}t ({:g}f): your ground jump died at {}t, the click now lands in the orb -> {}t", k, k * TICK,
+                        buf.orbNowRet, orbLanded);
                 }
                 else {
                     say("ORB press +{}t ({:g}f) -> {}t", k, k * TICK, orbLanded);
@@ -3458,7 +3501,7 @@ namespace {
                 // the press reaches the game exactly as before (your timing, no safety veto).
                 buf.appliedInput = down;
                 if (buf.explain) {
-                    say("orb timing: no timing inside the orb beats your click");
+                    say("orb timing: no tick inside the orb lives longer than your click ({}t)", buf.orbNowRet);
                 }
                 return false;
             }
@@ -4428,6 +4471,7 @@ class $modify(BufPlayLayer, PlayLayer) {
         }
         buf.ghost1 = makeGhost(this);
         buf.ghost2 = makeGhost(this);
+        buf.ghostMissingLogged = false;
         buf.ghostLayerBase = buf.ghostLayer->getChildrenCount();
 
         // In-game console (F9): hidden unless the player opens it.
