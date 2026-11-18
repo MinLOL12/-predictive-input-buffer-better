@@ -1,5 +1,7 @@
 # Click Before Frames (Geode)
 
+The **Build Mod** GitHub Actions workflow runs the policy tests and builds the Windows mod on pull requests to `main` and pushes to `main`. Download the **Build Output** artifact from a successful run and extract the `.geode` file. You can also start the workflow manually from the Actions tab.
+
 ## Keys
 F6 cycle stage | F3 menu | F8 copy the console log | F9 open/close the in-game console | F10 path view | F11 forget this level's memory
 
@@ -19,7 +21,7 @@ Wave predictions account for gravity portals even with smart prediction off, and
 The ghost copies the player's gravity and direction for both upright and upside-down play. Mirror portals only flip the camera, so predictions continue in level coordinates without activating the portal for real. Inverted wave uses a shorter spam threshold and stricter recovery checks; the stage, time budget, practice-only setting, and optional old wave logic still apply. Tight sections may need a larger F6 stage or prediction budget.
 
 ## v2.4 options (mod settings)
-- Wave auto-release (practice only, off by default): lets go for you when holding would crash within the window and letting go survives.
+- Wave auto-release (practice only, off by default): only lets go if holding would crash soon, releasing now clears the full wave lookahead without another click, and delaying the release would be unsafe. A short-lived improvement in a tight corridor is not enough.
 - Orbs: also try the other choice: if a prediction dies after touching an orb, it is retried with the opposite click/skip choice.
 - Don't buffer near moving objects (experimental, off by default): inputs are left untouched when the ghost's path hits recently moved spikes/blocks.
 - Drift check (debug): logs in the in-game console how far you strayed from the prediction after each input.

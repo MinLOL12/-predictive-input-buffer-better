@@ -1,27 +1,48 @@
-#name: Build Mod
+name: Build Mod
+
 on:
   workflow_dispatch:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
 jobs:
+  tests:
+    name: Policy tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and run tests
+        run: |
+          for source in tests/*_test.cpp; do
+            echo "Running $source"
+            binary="$RUNNER_TEMP/$(basename "${source%.cpp}")"
+            g++ -std=c++23 -Wall -Wextra -Werror -pedantic "$source" -o "$binary"
+            "$binary"
+          done
+
   build:
     name: Windows
     runs-on: windows-latest
+    needs: tests
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Build the mod
+        id: geode
         uses: geode-sdk/build-geode-mod@main
         with:
           sdk: given
-          combine: true
-  package:
-    name: Package builds
-    runs-on: ubuntu-latest
-    needs: ['build']
-    steps:
-      - uses: geode-sdk/build-geode-mod/combine@main
-        id: build
-      - uses: actions/upload-artifact@v4
+      - name: Upload Windows mod
+        uses: actions/upload-artifact@v4
         with:
           name: Build Output
-          path: ${{ steps.build.outputs.build-output }}
+          path: ${{ steps.geode.outputs.build-output }}/*.geode
+          if-no-files-found: error

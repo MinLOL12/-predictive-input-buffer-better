@@ -19,6 +19,7 @@
 
 #include "prediction_policy.hpp"
 #include "wave_rescue_policy.hpp"
+#include "wave_auto_release_policy.hpp"
 #include "menu_shortcut.hpp"
 #include <Geode/Geode.hpp>
 #include <Geode/modify/CCCircleWave.hpp>
@@ -1497,7 +1498,7 @@ namespace {
     // stopAt: stop as soon as this many ticks were survived (the caller already knows
     // that's good enough), instead of always running the full horizon.
     int simulate(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, bool down, int horizon, int releaseAfter,
-        int stopAt, SimEnd* end) {
+        int stopAt, SimEnd* end, bool requireFullHorizon = false) {
         *end = SimEnd::Ok;
         if (!buf.ghost1) {
             // v2.92: a missing ghost used to count as "survives the whole look-ahead", so every
@@ -1701,7 +1702,7 @@ namespace {
             if (survived >= stopAt) {
                 break;
             }
-            if (flying && !ufoRun) {
+            if (requireFullHorizon || (flying && !ufoRun)) {
                 continue;
             }
 
@@ -4009,10 +4010,39 @@ namespace {
         refreshPanel();
     }
 
-    // v2.4 wave auto-release (practice mode only): while you hold in wave, check every
-    // tick whether holding crashes within the next `autoWindow` ticks. If it does and
-    // letting go now clearly survives longer, let go for you. Your own release later is
-    // swallowed, and your next press works as normal.
+    std::optional<wave_auto_release_policy::Save> waveAutoReleaseSave(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2,
+        bool dual, int window) {
+        if (dual && !buf.ghost2) {
+            return std::nullopt;
+        }
+        PortalSafetyGuard portalSafetyGuard;
+        auto start = std::chrono::steady_clock::now();
+        bool mini = (p1->m_isDart && p1->m_vehicleSize < 1.f) || (p2 && p2->m_isDart && p2->m_vehicleSize < 1.f);
+        int clearance = std::max(fullWaveHorizon(mini), window + st(LOOKAHEAD_TAIL));
+        auto probe = [&](int horizon, int releaseAt) {
+            // Start from the real held state and model only the release we can send.
+            // A guessed orb click or re-press cannot make that release safe.
+            buf.skipPress = true;
+            buf.orbClick = false;
+            buf.trackMovers = buf.avoidMovers;
+            SimEnd end;
+            int survived = simulate(layer, p1, p2, dual, 0, true, horizon, releaseAt, horizon, &end, true);
+            buf.trackMovers = false;
+            buf.orbClick = buf.assumeOrbs;
+            buf.skipPress = false;
+            return wave_auto_release_policy::Prediction{survived, buf.ghostDied, buf.ghostHitPortal || buf.sawMover,
+                buf.secondInputFired};
+        };
+        // This runs per physics step, not just per click. If verification takes too
+        // long, leave the input alone rather than assuming waiting would be fatal.
+        auto outOfTime = [&] {
+            return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count()
+                >= std::min(buf.budgetMs, 2.0);
+        };
+        return wave_auto_release_policy::choose(window, clearance, probe, outOfTime);
+    }
+
+    // The real release is swallowed only after we sent one on the player's behalf.
     void tryAutoRelease(PlayLayer* layer, PlayerObject* p1) {
         if ((!buf.autoRelease && !buf.robotAutoRelease && !buf.dashAutoRelease) || buf.autoReleased || layer->m_isPlatformer) {
             return;
@@ -4034,32 +4064,38 @@ namespace {
         if (p1->m_isDead || !((dash && buf.dashAutoRelease) || (wave && buf.autoRelease) || (robot && buf.robotAutoRelease))) {
             return;
         }
-        bool mini = (p1->m_isDart && p1->m_vehicleSize < 1.f) || (p2 && p2->m_isDart && p2->m_vehicleSize < 1.f);
-
         int window = st(std::clamp(buf.autoWindow, 2, 24));
         buf.sawMover = false;
-        buf.skipPress = true;
-        buf.orbClick = buf.assumeOrbs;
-        SimEnd end;
-        int hold = simulate(layer, p1, p2, dual, 0, true, window, -1, window, &end);
-        buf.skipPress = false;
-        if (hold >= window || buf.ghostHitPortal) {
-            return;
+        int hold, release;
+        if (wave) {
+            auto save = waveAutoReleaseSave(layer, p1, p2, dual, window);
+            if (!save) {
+                return;
+            }
+            hold = save->holdTicks;
+            release = save->releaseTicks;
         }
+        else {
+            buf.skipPress = true;
+            buf.orbClick = buf.assumeOrbs;
+            SimEnd end;
+            hold = simulate(layer, p1, p2, dual, 0, true, window, -1, window, &end);
+            buf.skipPress = false;
+            if (hold >= window || buf.ghostHitPortal) {
+                return;
+            }
 
-        // v2.12 robot: letting go ends the jump boost; judged like a cube jump (landing = safe).
-        int horizon = wave ? fullWaveHorizon(mini) : st(std::clamp(buf.groundHorizon, 48, 240));
-        if (dash && (p1->m_isDart || p1->m_isBird || p1->m_isSwing)) {
-            horizon = fullFlyerHorizon();
-        }
-        buf.trackMovers = buf.avoidMovers;
-        int release = simulateOrbs(layer, p1, p2, dual, 0, false, horizon, -1, horizon, &end);
-        buf.trackMovers = false;
-        if (release < horizon && release < hold + st(10)) {
-            return;
-        }
-        if (buf.avoidMovers && buf.sawMover) {
-            return;
+            // Robot / dash keep their existing landing and survival rules.
+            int horizon = st(std::clamp(buf.groundHorizon, 48, 240));
+            if (dash && (p1->m_isDart || p1->m_isBird || p1->m_isSwing)) {
+                horizon = fullFlyerHorizon();
+            }
+            buf.trackMovers = buf.avoidMovers;
+            release = simulateOrbs(layer, p1, p2, dual, 0, false, horizon, -1, horizon, &end);
+            buf.trackMovers = false;
+            if ((release < horizon && release < hold + st(10)) || (buf.avoidMovers && buf.sawMover)) {
+                return;
+            }
         }
         buf.autoReleased = true;
         buf.autoDash = dash;
