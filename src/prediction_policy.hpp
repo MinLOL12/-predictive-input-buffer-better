@@ -42,4 +42,34 @@ namespace prediction_policy {
         return invertedWave ? invertedEscape : normalEscape;
     }
 
+    // v2.94: on the ground a press is a jump, so a jump that works is only turned into an orb
+    // click when the orb is this close (4 ticks = 1 frame) - there the press is already on the
+    // orb in the real run and the jump is what misses it.
+    constexpr int GROUND_ORB_REACH = 4;
+
+    constexpr bool groundOrbIntent(int touchTick, int reach) {
+        return touchTick >= 0 && touchTick <= reach;
+    }
+
+    // v2.94: wave gets a longer spam streak than the other modes (5 instead of 3): Tidal Wave
+    // style spam was going straight to the game after 3 fast clicks, so the buffer stopped
+    // helping exactly where the level is hardest.
+    constexpr int spamStreak(bool wave, int base) {
+        return wave ? base + 2 : base;
+    }
+
+    // v2.94: a ship input that already survives the whole look-ahead is left exactly where it
+    // is. The half-tick "safe only at the exact spot" re-search is a cube / orb rule; applying
+    // it to ship retimed straight-fly feathers that were fine and pushed the ship off its line.
+    constexpr bool leaveSafeInput(bool ship, bool survivesLookahead) {
+        return ship && survivesLookahead;
+    }
+
+    // v2.94: straight-fly tolerance. A recovered ship run that stays inside this vertical band
+    // counts as level enough; the old 48 units (1.6 blocks) called normal feather recovery
+    // "wobbly" and retimed taps that did not need it.
+    inline float straightBand(bool mini) {
+        return mini ? 60.f : 90.f;
+    }
+
 }

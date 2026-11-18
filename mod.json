@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.93.0",
+	"version": "v2.94.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -108,7 +108,7 @@
 		"wave-spam-gap": {
 			"type": "int",
 			"name": "Wave spam: max gap (ticks)",
-			"description": "Presses/releases closer together than this count as spam. After 3 in a row, wave inputs go straight to the game until you pause, unless a normal-wave input sequence is already queued (its timing is preserved). 6 ticks = 1.5 frames at 60fps. Upside-down wave uses at most 6 ticks. Raise it if spam still gets buffered, lower it if tight wave parts stop being buffered.",
+			"description": "Wave (v4.6 rules only): presses/releases closer together than this count as spam. After 3 in a row, those inputs go straight to the game until you pause. 6 ticks = 1.5 frames at 60fps. Upside-down wave uses at most 6 ticks. v2.94: the default (cube-style) wave now tolerates 5 fast inputs in a row instead of 3 before it is treated as spam, so Tidal Wave style spam stays buffered; this setting still controls the v4.6 spam path and the \"spam\" log line.",
 			"default": 6,
 			"min": 4,
 			"max": 40
@@ -122,7 +122,7 @@
 		"orb-align-ticks": {
 			"type": "int",
 			"name": "Orb alignment: max delay (ticks)",
-			"description": "How early a press may be and still be moved onto the orb - and how far into the orb an already-inside press may be re-timed. Every tick while you pass through the orb is tried and the middle of the safe click window is used, which is what makes frame-perfect orbs much easier. No frame cap. 32 ticks = 8 frames at 60fps, 60 ticks = 15 frames. Bigger values also need a bigger 'Prediction time budget'.",
+			"description": "How early a press may be and still be moved onto the orb - and how far into the orb an already-inside press may be re-timed. Every tick while you pass through the orb is tried and the middle of the safe click window is used, which is what makes frame-perfect orbs much easier. No frame cap. 32 ticks = 8 frames at 60fps, 60 ticks = 15 frames. Bigger values also need a bigger 'Prediction time budget'. v2.94: if there is no orb inside this window, airborne cube / ship presses probe further ahead (up to 120 ticks / the F6 stage) and are held until a tick inside that orb clears the whole look-ahead, so an orb in open air is no longer skipped because nothing above or below it made the press look like a death.",
 			"default": 32,
 			"min": 1,
 			"max": 24000
@@ -136,7 +136,7 @@
 		"wave-safety-margin": {
 			"type": "bool",
 			"name": "Wave: safety margin",
-			"description": "When a wave save is found, use a delay with one tick of room on both sides instead of the one that only just clears the spike, so tiny differences in the real run can't clip it. Can add 1 tick (0.25f) to some saves.",
+			"description": "When a wave save is found, use a delay with one tick of room on both sides instead of the one that only just clears the spike, so tiny differences in the real run can't clip it. Can add 1 tick (0.25f) to some saves. v2.94: wave also gets the best-effort save (the setting below): when no timing clears the look-ahead, the timing that lives longest is still used if it buys 3 frames over pressing now and dies past the late-crash line. On Tidal Wave style spam, where nothing is ever fully clear, that is the difference between a click that is buffered and one that is not.",
 			"default": true
 		},
 		"orb-align-ground": {
@@ -196,13 +196,13 @@
 		"ship-buffer": {
 			"type": "bool",
 			"name": "Ship: buffer inputs",
-			"description": "Buffer ship presses and releases, with the same max delay (F6 stage) as every other gamemode. A crash only counts if you couldn't have recovered (the opposite input 8 / 16 / 24 ticks before it is tried), and the smallest delay that clears wins. Repeated alternating feather taps are recognised as straight-flying: they are never spam-bypassed, and a tap only counts as safe if its recovered path also stays in a tight vertical band, so mistimed taps are retimed to level the ship. Off = ship is never touched.",
+			"description": "Buffer ship presses and releases, with the same max delay (F6 stage) as every other gamemode. v2.94: ship is the easiest mode to buffer again. Fast ship taps are NEVER treated as spam (that guard used to pass 3 fast taps in a row straight to the game - the flick you buffered never reached the buffer), and a tap that already survives the look-ahead is left exactly where it is instead of being re-searched for a \"safer spot\", so straight-fly feathering keeps its line. The straight-fly band was 48 units (1.6 blocks) - ordinary feather recovery read as wobbly and got retimed, which is what made the ship feel uncontrollable; it is now 90 units (180 mini). Ship orb clicks are buffered like cube ones: an early press is held onto the orb, a click inside an orb is retimed within it, and both need a path that clears the whole look-ahead. A crash still only counts if the opposite input 8 / 16 / 24 ticks before it cannot recover. Repeated alternating feather taps are recognised as straight-flying and never bypassed. Off = ship is never touched.",
 			"default": true
 		},
 		"orb-timing": {
 			"type": "bool",
 			"name": "Orb timing",
-			"description": "For frame-perfect orbs, retry timings while passing through the same orb. v2.86-v2.92: this covers the click that actually hits an orb. A press made while already inside an orb used to be passed to the game unchanged, so this setting could never change a real orb click. Now a press inside an orb counts as safe only if it also survives with you half a tick ahead of and behind (see 'Robust saves'). Otherwise every tick of the pass through the same orb is tried: a tick that clears the look-ahead wins, and when your click does not clear it any tick that lives longer is used as well - before, all of those were rejected and the mod said 'your click beats the timing' even when your click was the one killing you. It never picks the last tick you are still touching the orb on, and the most robust tick wins. The console says which: 'ORB timing +3t: your click 12t -> 27t (clears the look-ahead)' or '... lives longer but still dies later'. If nothing inside the orb lives longer than your click, your click is passed through untouched. Needs 'Orb alignment' and 'Orb / pad / portal prediction'.",
+			"description": "For frame-perfect orbs, retry timings while passing through the same orb. v2.94: covers ship orb clicks too. A press made while already inside an orb counts as safe only if it also survives with you half a tick ahead of and behind (see 'Robust saves'). Otherwise every tick of the pass through the same orb is tried: a tick that clears the look-ahead wins, and when your click does not clear it any tick that lives longer is used as well. An early press in front of an orb that has nothing above or below it is still held onto the orb (the orb path has to live past the late-crash line), instead of being applied where it misses the orb - that was the \"some orbs are just skipped\" case. It never picks the last tick you are still touching the orb on. Needs 'Orb alignment' and 'Orb / pad / portal prediction'.",
 			"default": true
 		},
 		"cube-late-crash": {
@@ -270,7 +270,7 @@
 		"ship-spam-gap": {
 			"type": "int",
 			"name": "Ship: spam gap (ticks)",
-			"description": "Ship is steered by feathering, so only taps closer together than this count as spam and go straight through - except an alternating straight-fly rhythm, which is always buffered. The normal spam gap (16) made almost every ship input spam, so ship was barely buffered. 4 ticks = 1 frame at 60fps.",
+			"description": "Ship is steered by feathering. v2.94: ship taps are never counted as spam at all - every fast ship input is buffered, so flicks are not skipped. This value is kept for older configs and for how fast inputs are grouped in the log; the normal spam gap only applies to UFO / ball / swing. 4 ticks = 1 frame at 60fps.",
 			"default": 6,
 			"min": 2,
 			"max": 40

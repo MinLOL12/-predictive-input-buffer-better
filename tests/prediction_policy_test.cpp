@@ -6,6 +6,8 @@ struct Player {
     bool m_isUpsideDown;
 };
 
+int main2();
+
 int main() {
     using namespace prediction_policy;
     assert(passOrbPress(true, true, true, false));
@@ -43,4 +45,23 @@ int main() {
     assert(strictWaveRecovery(true, false));
     assert(strictWaveRecovery(false, true));
     assert(strictWaveRecovery(true, true));
+    return main2();
+}
+
+// v2.94: ground orb intent, ship spam exemption, wave spam streak, ship straight band.
+int main2() {
+    using namespace prediction_policy;
+    assert(groundOrbIntent(3, GROUND_ORB_REACH));
+    assert(!groundOrbIntent(5, GROUND_ORB_REACH));
+    assert(!groundOrbIntent(-1, GROUND_ORB_REACH));
+    assert(spamStreak(true, 3) == 5);
+    assert(spamStreak(false, 3) == 3);
+    assert(leaveSafeInput(true, true));
+    assert(!leaveSafeInput(true, false));
+    assert(!leaveSafeInput(false, true));
+    // v2.94: the old 48-unit band retimed ordinary feather recovery as "wobbly".
+    assert(straightBand(true) < straightBand(false));
+    assert(straightBand(true) >= 60.f);
+    assert(straightBand(false) >= 90.f);
+    return 0;
 }
