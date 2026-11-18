@@ -1,5 +1,7 @@
 # Click Before Frames (Geode)
 
+The **Build Mod** GitHub Actions workflow runs the policy tests and builds the Windows mod on pull requests to `main` and pushes to `main`. Download the **Build Output** artifact from a successful run and extract the `.geode` file. You can also start the workflow manually from the Actions tab.
+
 ## Keys
 F6 cycle stage | F3 menu | F8 copy the console log | F9 open/close the in-game console | F10 path view | F11 forget this level's memory
 
@@ -13,13 +15,15 @@ New installs start at the 4-frame stage. Choose **Aggressive** in the buffer men
 A press already touching an orb passes through without a safety veto when no earlier input is queued. With 'Orb timing' on (v2.86) that click is checked first: if it does not survive the look-ahead, the other ticks inside the same orb are tried and the longest-living one is used, so orb timing now actually changes orb clicks (it used to return before ever re-timing a real orb press). For early airborne presses, alignment targets the first detected orb and can choose an activation even when no safe trajectory is predicted. If inputs are already queued, their order is preserved. Ground-to-orb alignment remains optional to avoid replacing ordinary jumps. Predictions are not guaranteed: two-player P2 and platformer movement remain unsupported, and prediction budgets, stage limits and settings still apply.
 
 ## Tight wave corridors
-Wave predictions account for gravity portals even with smart prediction off, and each player in dual can activate the portal in a prediction. While a normal-wave sequence is queued, fast inputs keep their timing instead of being collapsed by the spam guard. Both release-to-press and press-to-release follow-up turns are checked, including after gravity changes. Wave saves are checked through the full lookahead or a validated turn-away rather than accepting a short-lived improvement. These checks are limited by the selected stage and prediction time budget; the old v4.6 wave option retains its original queue rules.
+Wave predictions account for gravity portals even with smart prediction off, including both players in dual. The default wave rules use recent alternating press and release timings to check short, precise turn-aways. If several inputs are buffered, the ghost checks the whole pending sequence and can move the newest turn earlier or later within the available delay, without reordering it or firing a press and release in the same physics step. These checks still respect the stage and prediction time budget; the old v4.6 wave option retains its original queue rules.
+
+Dying or restarting drops pending inputs and the previous attempt's hold. A practice checkpoint does not replay an old Jump press; press again to steer the new attempt.
 
 ## Gravity and mirror portals
 The ghost copies the player's gravity and direction for both upright and upside-down play. Mirror portals only flip the camera, so predictions continue in level coordinates without activating the portal for real. Inverted wave uses a shorter spam threshold and stricter recovery checks; the stage, time budget, practice-only setting, and optional old wave logic still apply. Tight sections may need a larger F6 stage or prediction budget.
 
 ## v2.4 options (mod settings)
-- Wave auto-release (practice only, off by default): lets go for you when holding would crash within the window and letting go survives.
+- Wave auto-release (practice only, off by default): only lets go if holding would crash soon, releasing now clears the full wave lookahead without another click, and delaying the release would be unsafe. A short-lived improvement in a tight corridor is not enough.
 - Orbs: also try the other choice: if a prediction dies after touching an orb, it is retried with the opposite click/skip choice.
 - Don't buffer near moving objects (experimental, off by default): inputs are left untouched when the ghost's path hits recently moved spikes/blocks.
 - Drift check (debug): logs in the in-game console how far you strayed from the prediction after each input.

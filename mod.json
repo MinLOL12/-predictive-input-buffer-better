@@ -88,7 +88,7 @@
 		"wave-auto-release": {
 			"type": "bool",
 			"name": "Wave auto-release",
-			"description": "While you hold in wave, if holding would crash within the window below and letting go clearly survives, the mod lets go for you. Your own release is then ignored. Practice mode only, unless 'Auto-release in normal runs' is on.",
+			"description": "Lets go only if holding would crash within the window below, releasing now clears the full wave lookahead without another click, and waiting to release is predicted to be unsafe. Your own release is then ignored. Practice mode only, unless 'Auto-release in normal runs' is on.",
 			"default": false
 		},
 		"auto-release-window": {
