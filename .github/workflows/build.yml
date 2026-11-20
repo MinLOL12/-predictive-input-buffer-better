@@ -37,6 +37,8 @@ jobs:
         uses: geode-sdk/build-geode-mod@61a56c697aea9655e3f31c6c1b83870431f30434
         with:
           sdk: given
+          # Match the bindings used by the last successful Windows build on main.
+          bindings-ref: c6ce3dc90487ad75a71ded9b95e58d19c871a158
           target: Win64
       - uses: actions/upload-artifact@v4
         with:
