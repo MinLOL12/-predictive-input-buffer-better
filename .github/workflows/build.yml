@@ -32,6 +32,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Annotate Geode build errors
+        shell: bash
+        run: echo "::add-matcher::.github/geode-build-matcher.json"
       - name: Build with the Geode SDK from mod.json
         id: build
         uses: geode-sdk/build-geode-mod@61a56c697aea9655e3f31c6c1b83870431f30434

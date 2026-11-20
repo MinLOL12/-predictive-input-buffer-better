@@ -1,0 +1,14 @@
+{
+  "problemMatcher": [
+    {
+      "owner": "geode-build",
+      "severity": "error",
+      "pattern": [
+        {
+          "regexp": "^.*?((?:fatal error|error:|CMake Error|FAILED:|Error \\[|Error while|Exception:|error C[0-9]+|error LNK[0-9]+).*)$",
+          "message": 1
+        }
+      ]
+    }
+  ]
+}
