@@ -45,6 +45,16 @@ int main() {
     assert(strictWaveRecovery(true, false));
     assert(strictWaveRecovery(false, true));
     assert(strictWaveRecovery(true, true));
+    // The late collision at t50 used to be invisible to a +28t recovery
+    // check starting at t18. Nor is a single exact follow-up reaction room.
+    constexpr int horizon = 88;
+    auto lateCollision = [](int, int length) { return std::min(50, length); };
+    assert(!viableUfoReflap(18, 12, 24, horizon, lateCollision));
+    assert(!viableUfoReflap(18, 12, 24, horizon, [](int at, int length) { return at == 18 ? length : 24; }));
+    auto clears = [](int at, int length) { return at == 18 || at == 19 ? length : 24; };
+    assert(viableUfoReflap(18, 18, 24, horizon, clears));
+    assert(!viableUfoReflap(18, 19, 24, horizon, clears)); // would cut the original hold short
+    assert(!viableUfoReflap(18, 12, 20, horizon, clears)); // neighbor presses at the crash
     return main2();
 }
 

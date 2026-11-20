@@ -12,6 +12,11 @@ New installs start at the 4-frame stage. Choose **Aggressive** in the buffer men
 
 A press already touching an orb passes through without a safety veto when no earlier input is queued. With 'Orb timing' on (v2.86) that click is checked first: if it does not survive the look-ahead, the other ticks inside the same orb are tried and the longest-living one is used, so orb timing now actually changes orb clicks (it used to return before ever re-timing a real orb press). For early airborne presses, alignment targets the first detected orb and can choose an activation even when no safe trajectory is predicted. If inputs are already queued, their order is preserved. Ground-to-orb alignment remains optional to avoid replacing ordinary jumps. Predictions are not guaranteed: two-player P2 and platformer movement remain unsupported, and prediction budgets, stage limits and settings still apply.
 
+## Tight UFO flaps
+With **UFO: smart flaps** on, an early flap no longer counts as recoverable just because one perfectly timed follow-up postpones the crash. The follow-up must fit after your estimated hold and clear the lookahead at two adjacent timings. That extra margin applies only to the *hypothetical follow-up*: the delay search can still pick a single working physics tick for your actual press.
+
+For an Amethyst-style opening, test from just before the flap in practice with buffering enabled. At 240 Hz, one physics tick is a quarter of a 60 fps frame. The buffer can delay an early press onto a working tick within your stage and search budget; it can't rewind a late press or schedule a delay between physics ticks.
+
 ## Tight wave corridors
 Wave predictions account for gravity portals even with smart prediction off, and each player in dual can activate the portal in a prediction. While a normal-wave sequence is queued, fast inputs keep their timing instead of being collapsed by the spam guard. Both release-to-press and press-to-release follow-up turns are checked, including after gravity changes. Wave saves are checked through the full lookahead or a validated turn-away rather than accepting a short-lived improvement. These checks are limited by the selected stage and prediction time budget; the old v4.6 wave option retains its original queue rules.
 

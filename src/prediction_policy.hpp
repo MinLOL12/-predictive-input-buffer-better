@@ -42,6 +42,16 @@ namespace prediction_policy {
         return invertedWave ? invertedEscape : normalEscape;
     }
 
+    // A hypothetical second UFO flap is evidence of reaction room, not a second
+    // frame-perfect input we can assume the player will make. The retry releases
+    // at `at` and presses at `at + 1`. Test a neighboring timing too, but never
+    // impose this margin on the player's actual flap (its window can be one tick).
+    template <typename Simulate>
+    bool viableUfoReflap(int at, int releaseAfter, int crash, int horizon, Simulate simulate) {
+        return releaseAfter >= 0 && at >= releaseAfter && at + 2 < crash &&
+            simulate(at, horizon) >= horizon && simulate(at + 1, horizon) >= horizon;
+    }
+
     // v2.94: on the ground a press is a jump, so a jump that works is only turned into an orb
     // click when the orb is this close (4 ticks = 1 frame) - there the press is already on the
     // orb in the real run and the jump is what misses it.

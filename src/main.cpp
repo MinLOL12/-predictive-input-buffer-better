@@ -2591,17 +2591,25 @@ namespace {
         if (ret >= target || *end == SimEnd::StopSearch || quickScore) {
             return ret;
         }
+        bool ufo = buf.ufoSmart && (p1->m_isBird || (dual && p2 && p2->m_isBird));
+        auto simulateReflap = [&](int at, int length) {
+            buf.retapAt = at;
+            SimEnd e;
+            int survived = simulateOrbs(layer, p1, p2, dual, delay, true, length, releaseAfter, length, &e);
+            buf.retapAt = -1;
+            return survived;
+        };
         for (int margin : UFO_REFLAP) {
             int at = ret - st(margin);
             if (at < st(4)) {
                 break;
             }
-            int length = std::min(horizon, at + st(28));  // v2.81: reflap must clear by 7f, not 5f
-            buf.retapAt = at;
-            SimEnd e;
-            int reflapped = simulateOrbs(layer, p1, p2, dual, delay, true, length, releaseAfter, length, &e);
-            buf.retapAt = -1;
-            if (reflapped >= length) {
+            // Don't pass a dying UFO click just because an exact second tap
+            // postpones the crash a few frames. Keep swing's short recovery check.
+            int length = std::min(horizon, at + st(28));
+            bool recovered = ufo ? prediction_policy::viableUfoReflap(at, releaseAfter, ret, horizon, simulateReflap)
+                                 : simulateReflap(at, length) >= length;
+            if (recovered) {
                 if (buf.captureKiller && buf.baseEscape < 0) {
                     buf.baseEscape = at;
                     buf.baseCrash = ret;
